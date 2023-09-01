@@ -192,7 +192,7 @@ PC1_PC2_plot <- ggplot(data = df3, aes(x = PC1, y = PC2, z = PC3, col = nums_n_s
   scale_color_manual(labels = rep222$nums_n_site,
                      values = PCAcols)
 PC1_PC2_plot
-ggsave(paste0(outputloc, "/PCA/", species, "_PC1-.tiff"), width = 12, height = 10, dpi = 600, units = "in")
+ggsave(paste0(outputloc, "/PCA/", species, "_PC1-.tiff"), width = 12, height = 10, dpi = 300, units = "in")
 
 PC1_PC3_plot <- ggplot(data = df3, aes(x = PC1, y = PC3, col = nums_n_site)) +
   geom_point(alpha = 0.8, size = 5) +
@@ -210,7 +210,7 @@ PC1_PC3_plot <- ggplot(data = df3, aes(x = PC1, y = PC3, col = nums_n_site)) +
   scale_color_manual(labels = rep222$nums_n_site,
                      values = PCAcols)
 PC1_PC3_plot
-ggsave(paste0(outputloc, "/PCA/", species, "_PC1-PC3.tiff"), width = 12, height = 10, dpi = 600, units = "in")
+ggsave(paste0(outputloc, "/PCA/", species, "_PC1-PC3.tiff"), width = 12, height = 10, dpi = 300, units = "in")
 
 
 PC2_PC3_plot <- ggplot(data=df3, aes(x=PC2, y=PC3,col=nums_n_site))+
@@ -229,7 +229,7 @@ PC2_PC3_plot <- ggplot(data=df3, aes(x=PC2, y=PC3,col=nums_n_site))+
   scale_color_manual(labels=rep222$nums_n_site,
                      values = PCAcols)
 PC2_PC3_plot
-ggsave(paste0(outputloc, "/PCA/", species,"_PC2-PC3.tiff"), width = 12, height = 10, dpi = 600, units = "in")
+ggsave(paste0(outputloc, "/PCA/", species,"_PC2-PC3.tiff"), width = 12, height = 10, dpi = 300, units = "in")
 
 #now plot all 3 PCAs together
 options(ggrepel.max.overlaps = Inf)
@@ -305,7 +305,7 @@ prow1 <- plot_grid(PC1_PC2_plot,PC1_PC3_plot,PC2_PC3_plot, ncol=3)
 p1 <- plot_grid( prow1, legend_a, ncol = 1, rel_heights = c(1, .3))
 p1
 
-ggsave(paste0(outputloc, "/PCA/", species,"_Combined PCA.tiff"), width = 15, height = 8, dpi = 600, units = "in")
+ggsave(paste0(outputloc, "/PCA/", species,"_Combined PCA.tiff"), width = 15, height = 8, dpi = 300, units = "in")
 
 
 
@@ -356,7 +356,7 @@ prow <- plot_grid(PC1_PC2_plot,PC1_PC3_plot,PC2_PC3_plot, ncol=3)
 p <- plot_grid( prow, legend_b, ncol = 1, rel_heights = c(1, .3))
 p
 
-ggsave(paste0(outputloc, "/PCA/", species, " Latitude PCA.tiff"), width = 12, height = 6, dpi = 600, units = "in")
+ggsave(paste0(outputloc, "/PCA/", species, " Latitude PCA.tiff"), width = 12, height = 6, dpi = 300, units = "in")
 
 
 #calculate distance from PCA centroid for PC1 and PC2
@@ -420,24 +420,62 @@ divylims <- c(min(na.omit(newdmslat))-0.1,max(na.omit(newdmslat))+0.1)
 divxlimsrange <- abs(c(min(na.omit(newdmslong))-max(na.omit(newdmslong))))
 divylimsrange <- abs(c(min(na.omit(newdmslat))-max(na.omit(newdmslat))))
 
-coordinate_cities <- read.csv(paste0(maindir,"CityMapCordinates.csv"))
-sf_oz <- ozmap_data("states")
 
-#order and map expected het as a coloured range
-df2new <- df2new[order(-df2new$DistPointPC12),]
+    coordinate_cities <- read.csv(paste0(maindir,"CityMapCordinates.csv"))
+    sf_oz <- ozmap_data("states")
 
-ggplot(sf_oz, aes(fill="white")) + geom_sf() +
-  scale_fill_manual(values = "white", guide = "none") +
-  theme_void() + geom_sf() +
-  xlim(divxlims) + ylim(divylims)+
-  geom_point(data = df2new, mapping = aes(x = long, y = lat, color = DistPointPC12), size=5) +
-  scale_color_gradient(low="red", high="black", name="Centroid Dist") +
-  geom_point(data=coordinate_cities, mapping = aes(x = long, y = lat), size=1)+
-  geom_text(data=coordinate_cities, mapping = aes(x = long, y = lat, label=City),hjust=0,nudge_y=0.03, size=2)
+    #order and map expected het as a coloured range
+    data11 <- data11[order(data11$exp_het),]
 
-ggsave(paste0(outputloc, "/PCA/", species, "Dist_from_PCA12_Centroid.tiff"), width = 10, height = 12, dpi = 600, units = "in")
+    ggplot(sf_oz, aes(fill="white")) + geom_sf() +
+      scale_fill_manual(values = "white", guide = "none") +
+      theme_void() + geom_sf() +
+      xlim(divxlims) + ylim(divylims)+
+      geom_point(data = data11, mapping = aes(x = long, y = lat, color = exp_het), size=8, alpha=0.9) +
+      scale_color_gradient(low="yellow", high="red", name="Exp Het") +
+    geom_point(data=coordinate_cities, mapping = aes(x = long, y = lat), size=1)+
+    geom_text(data=coordinate_cities, mapping = aes(x = long, y = lat, label=City),hjust=0,nudge_y=0.03, size=3)
 
 
+    ggsave(paste0(outputloc, "/diversity/", species, "Expected_Het_Heatmap.tiff"), width = 10, height = 12, dpi = 300, units = "in")
+
+
+
+
+    #order and map observed het as a coloured range
+    data11 <- data11[order(data11$obs_het),]
+
+
+    ggplot(sf_oz, aes(fill="white")) + geom_sf() +
+      scale_fill_manual(values = "white", guide = "none") +
+      theme_void() + geom_sf() +
+      xlim(divxlims) + ylim(divylims)+
+      geom_point(data = data11, mapping = aes(x = long, y = lat, color = obs_het), size=8, alpha=0.9) +
+      scale_color_gradient(low="yellow", high="red", name="Obs Het") +
+      geom_point(data=coordinate_cities, mapping = aes(x = long, y = lat), size=1)+
+      geom_text(data=coordinate_cities, mapping = aes(x = long, y = lat, label=City),hjust=0,nudge_y=0.03, size=3)
+
+
+    ggsave(paste0(outputloc, "/diversity/", species, "Observed_Het_Heatmap.tiff"), width = 10, height = 12, dpi = 300, units = "in")
+
+
+
+
+    #order and map allelic richness as a coloured range
+    data11 <- data11[order(data11$ar),]
+
+
+    ggplot(sf_oz, aes(fill="white")) + geom_sf() +
+      scale_fill_manual(values = "white", guide = "none") +
+      theme_void() + geom_sf() +
+      xlim(divxlims) + ylim(divylims)+
+      geom_point(data = data11, mapping = aes(x = long, y = lat, color = ar), size=8, alpha=0.9) +
+      scale_color_gradient(low="yellow", high="red", name="ar") +
+      geom_point(data=coordinate_cities, mapping = aes(x = long, y = lat), size=1)+
+      geom_text(data=coordinate_cities, mapping = aes(x = long, y = lat, label=City),hjust=0,nudge_y=0.03, size=3)
+
+
+    ggsave(paste0(outputloc, "/diversity/", species, "Allelic_Richness_Heatmap.tiff"), width = 10, height = 12, dpi = 300, units = "in")
 
 
 #####  Create an all point PCA with map #####
@@ -562,7 +600,7 @@ p2 <- ggplot(df3, aes(var1, var2)) +
 plot_grid(p1, p2, ncol = 1)
 
 ggsave(paste0(fst_dir, "/", species, " fst heatmaps.tiff"),
-       width = 13.3, height = 7.5, dpi = 600, units = "in", device = 'tiff')
+       width = 13.3, height = 7.5, dpi = 300, units = "in", device = 'tiff')
 
 cat(paste0("geographic and pairwise fst heatmap drawn!", "\n"))
 
@@ -751,7 +789,7 @@ if (!dir.exists(lea_popdir)) {
     write.table(leapoppie_output, leapiescoord_file)
 
 
-    tiff(paste0(tempdir, species," LEA pies_bar k=",kval,".tiff"), units="in", width=12, height=12, res=480)
+    tiff(paste0(tempdir, species," LEA pies_bar k=",kval,".tiff"), units="in", width=12, height=12, res=300)
     par(mai=c(0,0,0,0))
     plot(1, type="n", axes=F, xlab="", ylab="")
     box()
@@ -816,7 +854,7 @@ if (!dir.exists(lea_popdir)) {
 
   ####draw sampling distribution with numbering
   tiff(paste0(outputloc,"/LEA/",species," samp_distrib.tiff"),
-       units="in", width=6, height=10, res=480)
+       units="in", width=6, height=10, res=200)
   #par(mar=c(0,2,0,0)) #c(bottom, left, top, right)
   # par(mai=c(0.1,0.1,0.2,0.1))
   par(mai=c(0.1, 0.1, 0.1, 0.1))
@@ -921,7 +959,7 @@ if (!dir.exists(lea_popdir)) {
   #lay <- rbind(c(2,2,1,1),c(2,2,1,1),c(2,2,1,1),c(3,3,3,3))
   lay <- rbind(c(1,1))
   ggsave(paste0("LEA/",species, " distrib_entrp.tiff"),
-         width=8, height=10, units = "in", device='tiff',dpi = 800,
+         width=8, height=10, units = "in", device='tiff',dpi = 300,
          marrangeGrob(grobs = plots, layout_matrix = lay,top=textGrob(paste0(analysis," LEA outputs"), gp=gpar(fontsize=20,fontface=4))))
 
   # cat(paste0("combined map and site for more lea outputs!","\n"))
@@ -949,7 +987,7 @@ if (!dir.exists(lea_popdir)) {
 
   lay <- rbind(c(1,3,5),c(2,4,6)) #for kvals from 2 to 7
   ggsave(paste0("LEA/",species, " LEA pies_bar_ALL.tiff"),
-         width=16, height=14,dpi = 600, units = "in", device='tiff',
+         width=16, height=14,dpi = 300, units = "in", device='tiff',
          marrangeGrob(grobs = pie_plots, layout_matrix = lay,top=NULL))
   # cat(paste0("combined all lea piebar plots!","\n"))
 
@@ -975,7 +1013,7 @@ if (!dir.exists(lea_popdir)) {
   layoo <- rbind(c(1,2,2,2),c(1,2,2,2),c(1,2,2,2),c(1,2,2,2))
 
   ggsave(paste0(outputloc,"/LEA/",species, " lea k2345loc bar test.tiff"),
-         width=11.7, height=8.3,dpi = 1200, units = "in", device='tiff',
+         width=11.7, height=8.3,dpi = 600, units = "in", device='tiff',
          marrangeGrob(grobs = plots, layout_matrix = layoo,top=NULL))
   cat(paste0("all LEA plots done!","\n"))
 
@@ -1097,7 +1135,7 @@ ggmap(googlemapbase) +
   scale_color_manual(values=rep_an3$bgcols, name = "Sampling Distribution", labels=rep_an3$analysis)
 
 
-ggsave(paste0(species,"_Distribution_Map.tiff"), path = paste0(outputloc, "/Map/"), width = 13.3, height = 7.5, dpi = 600, units = "in")
+ggsave(paste0(species,"_Distribution_Map.tiff"), path = paste0(outputloc, "/Map/"), width = 13.3, height = 7.5, dpi = 300, units = "in")
 
 ```
 
@@ -1187,7 +1225,7 @@ nd_pca <- glPca(nd_gl, nf=5, parallel=FALSE)
 myCol <- colorplot(nd_pca$scores,nd_pca$scores, transp=FALSE, cex=2)
 
 
-tiff(paste0(outputloc,"/NJTree/",species," NJ_Tree_population.tiff"), units="in", width=11.7, height=8.3, res=600)
+tiff(paste0(outputloc,"/NJTree/",species," NJ_Tree_population.tiff"), units="in", width=11.7, height=8.3, res=300)
 
 # scatter(nd_pca, xax=2,yax=3, posi="topleft", cex=0.1)
 
@@ -1204,7 +1242,7 @@ dev.off()
 
 
 
-tiff(paste0(outputloc,"/NJTree/",species,"_NJ_Tree_PCA.tiff"), units="in", width=11.7, height=7, res=600)
+tiff(paste0(outputloc,"/NJTree/",species,"_NJ_Tree_PCA.tiff"), units="in", width=11.7, height=7, res=300)
 
 ##########colour code according to latitude
 dms_meta <- cbind.data.frame(dms$meta$sample_names, dms$meta$analyses[,analysis],dms$meta$lat, dms$meta$long)
@@ -1384,7 +1422,7 @@ write.table(data,
 cexsize <- 0.5
 ptsize <-0.5
 
-tiff(paste0(outputloc,"/temp/",species," diveRsity stats2.tiff"), units="in", width=11.7, height=4, res=600)
+tiff(paste0(outputloc,"/temp/",species," diveRsity stats2.tiff"), units="in", width=11.7, height=4, res=300)
 par(mfrow=c(1,3), ## only works if plot out and not export tiff
     mar=c(1,1,1,1),
     oma=c(0,0,0.2,0)) #margins between nsw plots
@@ -1537,7 +1575,7 @@ plots <- lapply(ll <- lloo,function(x){
 lay <- rbind(c(1),c(2))
 
 ggsave(paste0("diversity/",species, " divntab.tiff"),
-       width=11.7, height=8.3,dpi = 800, units = "in", device='tiff',
+       width=11.7, height=8.3,dpi = 300, units = "in", device='tiff',
        marrangeGrob(grobs = plots, layout_matrix = lay,top=textGrob(paste0(analysis, " Diversity Outputs With Atleast 5 Individuals per Pop"), gp=gpar(fontsize=16,fontface=4))))
 
 file.remove(lloo)
@@ -1560,25 +1598,30 @@ summarise_QC(species, RandRbase, dataset)
 
 ####combine figures to get species summary
 
-loc_QC <-dir(path = outputloc, pattern = " QCdataALL.tiff$", full.names = TRUE, recursive = TRUE)
-loc_diversity <- dir(path = outputloc, pattern = "divntab.tiff$", full.names = TRUE, recursive = TRUE) ###must set working directory to make readtiff work
-loc_PCA_Lat <- dir(path = paste0(outputloc,"/PCA/"), pattern = "_PC1_PC2_PC3.tiff$", full.names = TRUE, recursive = TRUE) ###must set working directory to make readtiff work
-loc_PCA_wMap <- dir(path = paste0(outputloc,"/PCA/"), pattern = "_PCA_pops.tiff$", full.names = TRUE, recursive = TRUE) ###must set working directory to make readtiff work
-loc_PCA_1_2 <- dir(path = paste0(outputloc,"/PCA/"), pattern = "_PC1-PC2.tiff$", full.names = TRUE, recursive = TRUE) ###must set working directory to make readtiff work
-loc_PCA_Combined <- dir(path = paste0(outputloc,"/PCA/"), pattern = "_Combined PCA.tiff$", full.names = TRUE, recursive = TRUE) ###must set working directory to make readtiff work
+loc_QC <-dir(path = outputloc, pattern = " QCdataALL.tiff$", full.names = TRUE, recursive = TRUE) ###must set working directory to make readtiff work
+loc_diversity <- dir(path = outputloc, pattern = "divntab.tiff$", full.names = TRUE, recursive = TRUE) 
+loc_exphetdiv <- dir(path = outputloc, "/diversity/", pattern = "Expected_Het_Heatmap.tiff$", full.names = TRUE, recursive = TRUE) 
+loc_obshetdiv <- dir(path = outputloc, "/diversity/", pattern = "Observed_Het_Heatmap.tiff$", full.names = TRUE, recursive = TRUE) 
+loc_ardiv <- dir(path = outputloc, "/diversity/", pattern = "Allelic_Richness_Heatmap.tiff$", full.names = TRUE, recursive = TRUE) 
+loc_PCA_Lat <- dir(path = paste0(outputloc,"/PCA/"), pattern = "_PC1_PC2_PC3.tiff$", full.names = TRUE, recursive = TRUE) 
+loc_PCA_wMap <- dir(path = paste0(outputloc,"/PCA/"), pattern = "_PCA_pops.tiff$", full.names = TRUE, recursive = TRUE)
+loc_PCA_1_2 <- dir(path = paste0(outputloc,"/PCA/"), pattern = "_PC1-PC2.tiff$", full.names = TRUE, recursive = TRUE)
+loc_PCA_Combined <- dir(path = paste0(outputloc,"/PCA/"), pattern = "_Combined PCA.tiff$", full.names = TRUE, recursive = TRUE) 
+loc_PCA_Centroidmap <- dir(path = paste0(outputloc,"/PCA/"), pattern = "Dist_from_PCA12_Centroid.tiff$", full.names = TRUE, recursive = TRUE)
+loc_PCA_Centroid <- dir(path = paste0(outputloc,"/PCA/"), pattern = "_median_PC123.tiff$", full.names = TRUE, recursive = TRUE)
 loc_DistributionMap <- dir(path = paste0(outputloc,"/Map/"), pattern = "_Distribution_Map.tiff$", full.names = TRUE, recursive = TRUE)
 loc_NJTree <- dir(path = paste0(outputloc,"/NJTree/"), pattern = "_NJ_Tree_PCA.tiff$", full.names = TRUE, recursive = TRUE)
 loc_Kinship <- dir(path = paste0(outputloc, "/Kinship/"), pattern = "_kinship_heatmap.tiff$", full.names = TRUE, recursive = TRUE)
-loc_LEAbar <-dir(path = outputloc, pattern = "\\lea k2345loc bar test.tiff$", full.names = TRUE, recursive = TRUE) ###must set working directory to make readtiff work
-
+loc_LEAbar <-dir(path = outputloc, pattern = "\\lea k2345loc bar test.tiff$", full.names = TRUE, recursive = TRUE) 
 loc_Fst <- dir(path = outputloc, pattern = " fst plot.tiff$", full.names = TRUE, recursive = TRUE)
 loc_heatmapsFst <- dir(path = outputloc, pattern = " fst heatmaps.tiff$", full.names = TRUE, recursive = TRUE)
 loc_Fstq <- dir(path = outputloc, pattern = " fst plotq.tiff$", full.names = TRUE, recursive = TRUE)
 loc_heatmapsFstq <- dir(path = outputloc, pattern = " fst heatmapsq.tiff$", full.names = TRUE, recursive = TRUE)
 loc_indivFstback2back<- dir(path = outputloc, pattern = " back2back.tiff$", full.names = TRUE, recursive = TRUE)
 
-locs <- c(loc_QC,loc_DistributionMap,loc_PCA_wMap,loc_PCA_Lat,loc_PCA_1_2,loc_PCA_Combined,loc_LEAbar, loc_diversity,
-          loc_Fst,loc_heatmapsFst,loc_Fstq,loc_heatmapsFstq,loc_indivFstback2back, loc_NJTree, loc_Kinship, loc_alleleprop)
+
+
+locs <- c(loc_QC,loc_DistributionMap,loc_PCA_wMap,loc_PCA_Lat,loc_PCA_1_2,loc_PCA_Combined, loc_PCA_Centroid,loc_PCA_Centroidmap,loc_LEAbar, loc_diversity,loc_exphetdiv,loc_obshetdiv, loc_ardiv, loc_Fst,loc_heatmapsFst,loc_Fstq,loc_heatmapsFstq,loc_indivFstback2back, loc_NJTree, loc_Kinship, loc_alleleprop)
 
 
 for (i in 1:length(locs)) {
@@ -1588,7 +1631,7 @@ for (i in 1:length(locs)) {
 }
 
 plots <- lapply(ll <- locs,function(x){
-  img <- as.raster(readTIFF(x)) ##change this to readtiff if readtiff doesnt work
+  img <- as.raster(readTIFF(x))
   rasterGrob(img, interpolate = FALSE)
 })
 ggsave(paste0(outputloc2,species, "_", analysis, "_outputs.pdf"),width=7, height=5,

@@ -1,0 +1,2390 @@
+library(pacman)
+pacman::p_load(png, spatstat,ICSNP,openxlsx,ggmap, ade4, adegenet, animation, ape, car, caTools, cowplot, dartR, devtools, diveRsity, dplyr, gganimate, ggh4x, ggplot2, ggrepel, grid, gridExtra, LEA, magick, mapplots, OptGenMix, oz, ozmaps, plyr, poppr, readxl, reshape2, rgl, RRtools, sfsCalcs, tidyr, png, vegan, webshot2, geosphere, HWxtest, phangorn, phytools)
+
+##### Read parameter files, import and filter data #####
+
+load("C:/Users/dimonr/OneDrive - DPIE/R/Scripts/PSFsaved_scripts4autom.R")
+
+maindir<- "C:/Users/dimonr/OneDrive - DPIE/R/rrspecies/"
+setwd(maindir)
+
+RandRbase <- ""
+spls <- read.csv(paste0(RandRbase,"RRSpeciesParameters.csv"),header = TRUE)
+nsp <- length(spls$species) #number of species
+
+
+# for (z in 1:5) {
+
+z = 1
+
+species <- spls$species[z]
+dataset <- spls$dataset[z]
+analysis <- spls$analysis[z]
+topskip <- spls$topskip[z]
+nmetavar <- spls$nmetavar[z]
+max_missing <- spls$max_missing[z]
+print(paste0("Starting ", species))
+
+d1 <- read.dart.xls.onerow(RandRbase, species, dataset, topskip, nmetavar, euchits = FALSE)
+qc1 <- report.dart.qc.stats(d1, RandRbase, species, dataset, threshold_missing_loci = 0.8) # threshold_missing_loci: check which samples have 80% missing loci
+d2 <- remove.poor.quality.snps(d1, min_repro = 0.96, max_missing = max_missing)
+qc2 <- report.dart.qc.stats(d2, RandRbase, species, dataset)
+d3 <- sample.one.snp.per.locus.random(d2, seed = 12345)
+qc3 <- report.dart.qc.stats(d3, RandRbase, species, dataset)
+#read metadata file
+metafile <- read.xlsx(paste0(maindir, species,"/meta/",species,"_",dataset,"_meta.xlsx"))
+m1 <- read.meta.data(d3, RandRbase, species, dataset, fields = as.numeric(ncol(metafile)-4))
+colnames(m1$analyses)
+
+# create an output directory
+outputloc <- paste0(maindir, species, "/output_", analysis)
+outputloc2 <- paste0(maindir, species, "/output_", analysis, "/")
+if (!dir.exists(outputloc)) {
+  dir.create(outputloc)
+}
+
+# create a temp meta dataframe to remove sites/samples that include less than X individuals
+temp <- as.data.frame(m1$analyses)
+tempdir <- paste0(outputloc, "/temp/")
+if (!dir.exists(tempdir)) {
+  dir.create(tempdir)
+}
+
+# set a sample threshold for each pop: change this to what number of samples you want to have uniform across all pops
+
+samplethreshold <- 1
+
+##### Below lines remove sites with less than threshold number of samples, and subsample sites that are above the threshold
+# for (x in unique(na.omit(temp[, analysis]))) {
+#   pop_samples <- which(temp[, analysis] == x)
+#   if (length(pop_samples) < samplethreshold) {
+#     temp[, analysis]<-gsub(x, replacement=NA, temp[, analysis])
+#     print(paste0("Removing ",x, " with ", " with a sample size of ",length(pop_samples)," samples"))
+#   }
+#   if (length(pop_samples) == samplethreshold) {
+#     print(paste0("Keeping ",x, " with ", " with a sample size of ",length(pop_samples)," samples"))
+#   }
+#   if (length(pop_samples) > samplethreshold) {
+#     subsamplepops <- pop_samples[sample(1:length(pop_samples), size=samplethreshold, replace = F)]
+#     for (b in 1:length(pop_samples)){
+#       if (pop_samples[b] %in% subsamplepops == FALSE){
+#         temp[, analysis][pop_samples[b]] <- NA
+#       }
+#       print(paste0("Reducing ",x, " to a sample size of ", samplethreshold," samples"))
+#     }
+#   } else {}
+# }
+
+##### If you want to just remove any sites that are below the threshold (but keep individuals that are above a threshold, then unhash the below section)
+for (x in unique(na.omit(temp[, analysis]))) {
+  pop_samples <- which(temp[, analysis] == x)
+  if (length(pop_samples) < samplethreshold) {
+    temp[, analysis] <- gsub(x, replacement = NA, temp[, analysis])
+    print(paste0("Removing ", x, " with ", " with a sample size of ", length(pop_samples), " samples"))
+  } else {}
+}
+
+m1$analyses <- temp
+dm <- dart.meta.data.merge(d3, m1)
+fields <- c(analysis)
+dms <- data.by.meta.fields(dm, fields, RandRbase, species, dataset, object = analysis)
+# correct inconsistencies in J's scripts for naming treatment which is for naming files
+treatment <- paste0("raw_SNPFilt_1SNPperClone_Field_", analysis)
+dms$treatment <- treatment
+gta <- dms$gt
+
+
+
+
+
+
+
+
+##### Sam's Mapping Script modified by Richard #####
+
+if(!dir.exists(paste0(outputloc, "/Map"))){
+  dir.create(paste0(outputloc, "/Map"))
+}
+
+#this bit checks for zeros in lats and longs and cut out those samples
+row_sub = apply(data.frame(dms$meta$long), 1, function(row) all(row !=0 ))
+newdmslong <- data.frame(dms$meta$long)[row_sub,]
+row_sub = apply(data.frame(dms$meta$lat), 1, function(row) all(row !=0 ))
+newdmslat <- data.frame(dms$meta$lat)[row_sub,]
+
+#this bit looks for range of latlong values to zoom in on and calulcates range for zoom for ggmap
+divxlims <- c(min(na.omit(newdmslong))-0.6,max(na.omit(newdmslong))+0.6)
+divylims <- c(min(na.omit(newdmslat))-0.4,max(na.omit(newdmslat))+0.4)
+divxlimsrange <- abs(c(min(na.omit(newdmslong))-max(na.omit(newdmslong))))
+divylimsrange <- abs(c(min(na.omit(newdmslat))-max(na.omit(newdmslat))))
+
+if(divylimsrange > 5) {gmapzoom= 5}
+if(divylimsrange > 4 && divylimsrange < 5)  {gmapzoom= 6}
+if(divylimsrange > 3 && divylimsrange < 4)  {gmapzoom= 7}
+if(divylimsrange > 2 && divylimsrange < 3)  {gmapzoom= 8}
+if(divylimsrange > 1 && divylimsrange < 2)  {gmapzoom= 9}
+if(divylimsrange > 0.2 && divylimsrange < 1) {gmapzoom= 10}
+if(divylimsrange < 0.2) {gmapzoom= 11}
+
+
+data <- data.frame(sample=dms$sample_names,
+                   site=dms$meta$site,
+                   analysis=dms$meta$analyses[,analysis],
+                   lat=dms$meta$lat,
+                   long=dms$meta$long)
+data2 <- data[order(data$site),]
+data3 <- data2[order(-data2$lat),]
+data3$site <- factor(data3$site, levels = unique(data3$site),ordered = TRUE)
+
+#this arranges the sites according to latitude
+rep <- ddply(data3,
+             .(analysis),
+             summarise,
+             lat  = mean(lat),
+             long = mean(long))
+rep2 <- rep[order(-rep$lat),]
+rep2$analysis <-factor(rep2$analysis, levels=unique(rep2$analysis))
+
+###colours for each group
+rep_an <- ddply(data3,
+                .(analysis),
+                summarise,
+                lat  = mean(lat),
+                long = mean(long))
+rep_an2 <- rep_an[order(-rep_an$lat),]
+rval <- as.numeric(length(unique(data3$analysis)))    ##this counts the number(length) of unique characters for the variable set as analysis at the beginning
+rep_an2$bgcols <- c(rainbow(rval))
+rep_an3 <- rep_an2[,c("analysis","bgcols")]
+rep_all <- merge(rep2,rep_an3, by= "analysis")
+rep_all$analysis <-factor(rep_all$analysis, levels=unique(rep_an3$analysis))
+rep_all <- rep_all[order(-rep_all$lat),]
+
+for (q in 1:length(rep_all$analysis)){
+  rep_all$number[q] <- q
+  rep_all$siteAndNumber[q] <- paste0(rep_all$number[q]," ",rep_all$analysis[q]," (", length(which(data3$analysis==rep_all$analysis[q])), ")")
+}
+
+#googlemaps base and plot
+library(ggmap)
+register_google(key = "AIzaSyBZIYV071yUULZTtcUMUZTMwOgRJrKAcaw")
+
+#gmapzoom = 5
+
+if (length(rep_an3$analysis) > 30){legendcolumns = 3}
+if (length(rep_an3$analysis) > 20 && length(rep_an3$analysis) < 30){legendcolumns = 2}
+if (length(rep_an3$analysis) < 20){legendcolumns = 1}
+
+
+
+googlemapbase = get_map(location = c(left = divxlims[1], bottom = divylims[1], right = divxlims[2], top=divylims[2]), zoom = gmapzoom, scale = "auto", maptype = "hybrid", source = c("google"))
+
+# google map cropped by lat and long
+ggmap(googlemapbase) +
+  geom_point(data = rep_all, mapping = aes(x = long, y = lat, col=analysis), size=3)+
+  geom_text_repel(data=rep_all, mapping=aes(x = long, y = lat, label=number, col=analysis, fontface = "bold"), size=1.5, hjust=0) +
+  guides(col = guide_legend(ncol = legendcolumns)) +
+  theme(legend.text=element_text(size=8)) +
+  ylab(paste0("Lat"))+
+  xlab(paste0("Long"))+
+  scale_color_manual(values=rep_an3$bgcols, name = "Sites (samples)", labels=c(rep_all$siteAndNumber))+
+  ggtitle(paste0("Sampling Distribution and Number of Samples - Analysis: ", analysis)) 
+
+
+ggsave(paste0(species,"_Distribution_Map.tiff"), path = paste0(outputloc, "/Map/"), width = 13.3, height = 7.5, dpi = 300, units = "in")
+
+
+
+
+
+
+
+##### Population and Sample PCA, latitude PCA and Centroid PCA Map #####
+
+PCAcols <- rainbow(length(unique(dms$meta$analyses[, analysis])))
+nd_gl <- dart2gl(dms, RandRbase, species, dataset) # converts the cleaned data to genlight format
+nd_pca <- glPca(nd_gl, nf = 5, parallel = FALSE) # nf indicates the number of principal components to be retained
+scatter(nd_pca) # a quick check of PCA
+
+PCAdirectory <- paste0(outputloc, "/PCA/")
+if (!dir.exists(PCAdirectory)) {
+  dir.create(PCAdirectory)
+}
+
+sample_PC1_PC2 <- cbind(dms$meta$sample_names,
+                        dms$meta$analyses[, analysis],
+                        dms$meta$lat, dms$meta$long,
+                        nd_pca$scores[, 1], # PC1
+                        nd_pca$scores[, 2], # PC2
+                        nd_pca$scores[, 3]) # PC3
+
+colnames(sample_PC1_PC2) <- c("names", "site", "lat", "long", "PC1", "PC2", "PC3")
+write.table(sample_PC1_PC2,
+            paste0(outputloc, "/PCA/", species, " sample_PC1_PC2_PC3.csv"),
+            sep = ",", col.names = TRUE, row.names = FALSE)
+
+names <- rownames(sample_PC1_PC2)
+rownames(sample_PC1_PC2) <- NULL
+data <- cbind(names, sample_PC1_PC2)
+
+df <- data.frame(data, stringsAsFactors = FALSE)
+df$PC1 <- as.numeric(df$PC1)
+df$PC2 <- as.numeric(df$PC2)
+df$PC3 <- as.numeric(df$PC3)
+df$lat <- as.numeric(df$lat)
+df$long <- as.numeric(df$long)
+
+df2new <- df[order(-df$lat),]
+df2new$site <- factor(df2new$site, levels = unique(df2new$site), ordered = TRUE)
+
+rep <- ddply(df2new,
+             .(site),
+             summarise,
+             lat = mean(lat),
+             long = mean(long),
+             PC1 = mean(PC1),
+             PC2 = mean(PC2),
+             PC3 = mean(PC3))
+
+rep2 <- rep[order(-rep$lat),]
+x <- length(unique(df2new$site))
+bgcols <- rainbow(x)
+rep2$nums_n_site <- paste0(1:x, ": ", rep2$site)
+rep2$num_site <- 1:x
+rep222 <- rep2
+rep222$nums_n_site <- factor(rep222$nums_n_site, levels = unique(rep222$nums_n_site))
+df3 <- merge(df, rep222[, c(1, 7, 8)], by = "site")
+f <- nd_pca$eig[nd_pca$eig > sum(nd_pca$eig / length(nd_pca$eig))]
+e <- round(f * 100 / sum(nd_pca$eig), 1)
+
+percvar <- cbind(e[1], e[2], e[3])
+colnames(percvar) <- c("PC1", "PC2", "PC3")
+write.table(percvar,
+            paste0(outputloc, "/PCA/", species, " percent_variance.csv"),
+            sep = ",", col.names = TRUE, row.names = FALSE)
+
+options(ggrepel.max.overlaps = Inf)
+
+PC1_PC2_plot <- ggplot(data = df3, aes(x = PC1, y = PC2, z = PC3, col = nums_n_site)) +
+  geom_point(alpha = 0.8, size = 5) +
+  geom_text_repel(aes(label = num_site), col = PCAcols, size = 2, data = rep222, segment.color = NA) +
+  theme_minimal() +
+  theme(axis.line = element_line(colour = "grey50"), legend.text = element_text(size = 10),
+        axis.title = element_text(size = 30, face = "bold"),
+        axis.text = element_text(size = 20, face = "bold"),
+        legend.title = element_blank(),
+        legend.position = "bottom",
+        plot.title = element_text(face = "bold.italic", size = 10)) +
+  guides(col = guide_legend(ncol = 6)) +
+  ylab(paste0("PC2", " (", e[2], "%)")) +
+  xlab(paste0("PC1", " (", e[1], "%)")) +
+  scale_color_manual(labels = rep222$nums_n_site,
+                     values = PCAcols)
+PC1_PC2_plot
+ggsave(paste0(outputloc, "/PCA/", species, "_PC1-.tiff"), width = 12, height = 10, dpi = 300, units = "in")
+
+PC1_PC3_plot <- ggplot(data = df3, aes(x = PC1, y = PC3, col = nums_n_site)) +
+  geom_point(alpha = 0.8, size = 5) +
+  geom_text_repel(aes(label = num_site), col = PCAcols, size = 2, data = rep222, segment.color = NA) +
+  theme_minimal() +
+  theme(axis.line = element_line(colour = "grey50"), legend.text = element_text(size = 10),
+        axis.title = element_text(size = 30, face = "bold"),
+        axis.text = element_text(size = 20, face = "bold"),
+        legend.title = element_blank(),
+        legend.position = "bottom",
+        plot.title = element_text(face = "bold.italic", size = 10)) +
+  guides(col = guide_legend(ncol = 6)) +
+  ylab(paste0("PC3", " (", e[3], "%)")) +
+  xlab(paste0("PC1", " (", e[1], "%)")) +
+  scale_color_manual(labels = rep222$nums_n_site,
+                     values = PCAcols)
+PC1_PC3_plot
+ggsave(paste0(outputloc, "/PCA/", species, "_PC1-PC3.tiff"), width = 12, height = 10, dpi = 300, units = "in")
+
+
+PC2_PC3_plot <- ggplot(data=df3, aes(x=PC2, y=PC3,col=nums_n_site))+
+  geom_point(alpha=0.8, size=5) + #alpha is for transparency
+  geom_text_repel(aes(label = num_site),col=PCAcols,size=2,data =rep222,segment.color = NA)+
+  theme_minimal()+
+  theme(axis.line = element_line(colour = "grey50"), legend.text=element_text(size=10),
+        axis.title=element_text(size=30, face= "bold"),
+        axis.text=element_text(size=20, face= "bold"),
+        legend.title = element_blank(),
+        legend.position = "bottom",
+        plot.title = element_text(face = "bold.italic", size=10))+
+  guides(col = guide_legend(ncol = 6)) + #how many columns in the legend
+  ylab(paste0("PC3"," (",e[3],"%)"))+
+  xlab(paste0("PC2"," (",e[2],"%)"))+
+  scale_color_manual(labels=rep222$nums_n_site,
+                     values = PCAcols)
+PC2_PC3_plot
+ggsave(paste0(outputloc, "/PCA/", species,"_PC2-PC3.tiff"), width = 12, height = 10, dpi = 300, units = "in")
+
+#now plot all 3 PCAs together
+options(ggrepel.max.overlaps = Inf)
+PC1_PC2_plot <- ggplot(data=df3, aes(x=PC1, y=PC2,col=nums_n_site))+
+  geom_point(alpha=0.8, size=4) + #alpha is for transparency
+  geom_text_repel(aes(label = num_site),col=PCAcols,size=2,data =rep222,segment.color = NA)+
+  theme_minimal()+
+  theme(axis.line = element_line(colour = "grey50"), legend.text=element_text(size=10),
+        axis.title=element_text(size=15, face= "bold"),
+        axis.text=element_text(size=10, face= "bold"),
+        legend.title = element_blank(),
+        legend.position = "none",
+        plot.title = element_text(face = "bold.italic", size=10))+
+  guides(col = guide_legend(ncol = 6)) + #how many columns in the legend
+  ylab(paste0("PC2"," (",e[2],"%)"))+
+  xlab(paste0("PC1"," (",e[1],"%)"))+
+  scale_color_manual(labels=rep222$nums_n_site,
+                     values = PCAcols)
+
+PC1_PC3_plot <- ggplot(data=df3, aes(x=PC1, y=PC3,col=nums_n_site))+
+  geom_point(alpha=0.8, size=4) + #alpha is for transparency
+  geom_text_repel(aes(label = num_site),col=PCAcols,size=2,data =rep222,segment.color = NA)+
+  theme_minimal()+
+  theme(axis.line = element_line(colour = "grey50"), legend.text=element_text(size=10),
+        axis.title=element_text(size=15, face= "bold"),
+        axis.text=element_text(size=10, face= "bold"),
+        legend.title = element_blank(),
+        legend.position = "none",
+        plot.title = element_text(face = "bold.italic", size=10))+
+  guides(col = guide_legend(ncol = 6)) + #how many columns in the legend
+  ylab(paste0("PC3"," (",e[3],"%)"))+
+  xlab(paste0("PC1"," (",e[1],"%)"))+
+  scale_color_manual(labels=rep222$nums_n_site,
+                     values = PCAcols)
+
+PC2_PC3_plot <- ggplot(data=df3, aes(x=PC2, y=PC3,col=nums_n_site))+
+  geom_point(alpha=0.8, size=4) + #alpha is for transparency
+  geom_text_repel(aes(label = num_site),col=PCAcols,size=2,data =rep222,segment.color = NA)+
+  theme_minimal()+
+  theme(axis.line = element_line(colour = "grey50"), legend.text=element_text(size=10),
+        axis.title=element_text(size=15, face= "bold"),
+        axis.text=element_text(size=10, face= "bold"),
+        legend.title = element_blank(),
+        legend.position = "none",
+        plot.title = element_text(face = "bold.italic", size=10))+
+  guides(col = guide_legend(ncol = 6)) + #how many columns in the legend
+  ylab(paste0("PC3"," (",e[3],"%)"))+
+  xlab(paste0("PC2"," (",e[2],"%)"))+
+  scale_color_manual(labels=rep222$nums_n_site,
+                     values = PCAcols)
+
+theme_set(theme_gray())
+PC_plot1 <- ggplot(data=df3, aes(x=PC2, y=PC3,col=nums_n_site))+
+  geom_point(alpha=0.8, size=4) + #alpha is for transparency
+  geom_text_repel(aes(label = num_site),col=PCAcols,size=2,data =rep222,segment.color = NA)+
+  theme_minimal()+
+  theme(axis.line = element_line(colour = "grey50"), legend.text=element_text(size=10),
+        axis.title=element_text(size=15, face= "bold"),
+        axis.text=element_text(size=10, face= "bold"),
+        legend.title = element_blank(),
+        legend.position = "bottom",
+        plot.title = element_text(face = "bold.italic", size=10))+
+  guides(col = guide_legend(ncol = 6)) + #how many columns in the legend
+  ylab(paste0("PC3"," (",e[3],"%)"))+
+  xlab(paste0("PC2"," (",e[2],"%)"))+
+  scale_color_manual(labels=rep222$nums_n_site,
+                     #values = c("red", "green", "blue", "orange", "purple"))      #rainbow(length(unique(df2new$site))))
+                     values = PCAcols)
+
+legend_a <- get_legend(PC_plot1 + theme(legend.position="bottom",
+                                        legend.text=element_text(size=8)))
+prow1 <- plot_grid(PC1_PC2_plot,PC1_PC3_plot,PC2_PC3_plot, ncol=3)
+p1 <- plot_grid( prow1, legend_a, ncol = 1, rel_heights = c(1, .3))
+p1
+
+ggsave(paste0(outputloc, "/PCA/", species,"_Combined PCA.tiff"), width = 15, height = 8, dpi = 300, units = "in")
+
+
+
+##### Latitude PCA #####
+
+PC1_PC2_plot <- ggplot(df2new, aes(PC1, PC2, col=lat))+ geom_point(alpha=0.5) +
+  theme(legend.position="none",aspect.ratio = 1,
+        plot.title = element_text(face = "bold.italic", size=9),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7),
+        legend.title = element_text(size = 7))+
+  ylab(paste0("PCA2"," (",e[2],"%)"))+ xlab(paste0("PCA1"," (",e[1],"%)"))+
+  ggtitle(paste0(species, "\n"," PC1 vs PC2")) + scale_color_gradient(low="blue", high="red")
+
+###PC1 vs PC3
+PC1_PC3_plot <- ggplot(df2new, aes(PC1, PC3, col=lat))+ geom_point(alpha=0.5) +
+  theme(legend.position="none",aspect.ratio = 1,
+        plot.title = element_text(face = "bold.italic", size=9),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7))+
+  ylab(paste0("PCA3"," (",e[3],"%)"))+ xlab(paste0("PCA1"," (",e[1],"%)"))+
+  ggtitle(paste0("\n"," PC1 vs PC3")) + scale_color_gradient(low="blue", high="red")
+
+###PC2 vs PC3
+PC2_PC3_plot <- ggplot(df2new, aes(PC2, PC3, col=lat))+ geom_point(alpha=0.5) +
+  ylab(paste0("PCA3"," (",e[3],"%)"))+ xlab(paste0("PCA2"," (",e[2],"%)"))+
+  theme(legend.position="none",aspect.ratio = 1,
+        plot.title = element_text(face = "bold.italic", size=9),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7),
+        legend.title = element_text(size = 7)) +
+  scale_color_gradient(low="blue", high="red")+
+  ggtitle(paste0("\n"," PC2 vs PC3"))
+
+PC_plot <- ggplot(df2new, aes(PC2, PC3, col=lat))+ geom_point() +
+  ylab(paste0("PCA3"," (",e[3],"%)"))+ xlab(paste0("PCA2"," (",e[2],"%)"))+
+  scale_color_gradient(low="blue", high="red")+
+  ggtitle(paste0(" PC2 vs PC3"))
+
+theme_set(theme_gray())
+
+legend_b <- get_legend(PC_plot + theme(legend.position="bottom",
+                                       legend.text=element_text(size=4))+ labs(col = "Latitude"))
+
+# add the legend underneath the row we made earlier. Give it 10% of the height
+# of one plot (via rel_heights).
+prow <- plot_grid(PC1_PC2_plot,PC1_PC3_plot,PC2_PC3_plot, ncol=3)
+p <- plot_grid( prow, legend_b, ncol = 1, rel_heights = c(1, .3))
+p
+
+ggsave(paste0(outputloc, "/PCA/", species, " Latitude PCA.tiff"), width = 12, height = 6, dpi = 300, units = "in")
+
+
+#calculate distance from PCA centroid for PC1 and PC2
+meta2new <- df2new[order(-df2new$lat),] # this dataset is used in generating a summary of pops and their average latlongs for making maps/tables
+meta2new$site <- factor(meta2new$site, levels = unique(meta2new$site),ordered = TRUE)
+reg_names_xna <- unique(meta2new$reg)
+num_reg <- 1
+
+pcaData2 <- read.csv(paste0(outputloc,"/PCA/",species," sample_PC1_PC2_PC3.csv"),header=T)
+pcaData <- pcaData2[order(-pcaData2$lat),]
+pcaData$site <- factor(pcaData$site, levels = unique(pcaData$site),ordered = TRUE)
+
+#d2 <- merge(pcaData, meta2new[,c("names")], by.x="X", by.y="names")
+d <- df2new[order(-df2new$lat),]
+d$site <- factor(d$site, levels = unique(d$site),ordered = TRUE)
+pcaVAR <- read.csv(paste0(outputloc,"/PCA/",species," percent_variance.csv"),header=T)
+
+# Compute median coordinates of PC1 and PC2
+medCoords <- unlist(c(spatial.median(as.numeric(pcaData$PC1)), spatial.median(as.numeric(pcaData$PC2)), spatial.median(as.numeric(pcaData$PC3))))
+
+###plot out PC123 with median included
+pca_plot12 <- ggplot(pcaData, aes(x = PC1, y = PC2)) +
+  geom_point(shape = 16, colour = "darkgrey", size = 0.5)+ ggtitle(species)+
+  labs(x=paste0("PC1"," (",pcaVAR[1],"%)"), y=paste0("PC2"," (",pcaVAR[2],"%)"))+theme_classic()+theme(plot.title = element_text(size=5))
+pca_plot13 <- ggplot(pcaData, aes(x = PC1, y = PC3)) +
+  geom_point(shape = 16, colour = "darkgrey", size = 0.5)+
+  labs(x=paste0("PC1"," (",pcaVAR[1],"%)"),y=paste0("PC3"," (",pcaVAR[3],"%)"))+theme_classic()
+pca_plot23 <- ggplot(pcaData, aes(x = PC2, y = PC3)) +
+  geom_point(shape = 16, colour = "darkgrey", size = 0.5)+
+  labs(x=paste0("PC2"," (",pcaVAR[2],"%)"), y=paste0("PC3"," (",pcaVAR[3],"%)"))+theme_classic()
+
+for (i in 1:num_reg){
+  pca_plot12 <- pca_plot12+
+    geom_point(aes(x = medCoords[1], y = medCoords[2]), shape = "+", col = "red", size = 5)
+  pca_plot13 <- pca_plot13+
+    geom_point(aes(x = medCoords[1], y = medCoords[2]), shape = "+", col = "red", size = 5)
+  pca_plot23 <- pca_plot23+
+    geom_point(aes(x = medCoords[1], y = medCoords[2]), shape = "+", col = "red", size = 5)
+  
+}
+
+pca_plot12 #check, the red dot will be the median centroid, each point represent an individual on a multivariate space,
+med123 <- plot_grid(pca_plot12,pca_plot13,pca_plot23, ncol=3)
+ggsave(med123, file=paste0(outputloc,"/PCA/",species,"_median_PC123.tiff"),
+       width = 8, height = 3, dpi = 300, units = "in", device='tiff')
+
+for (i in 1:length(df2new$names)){
+  df2new$DistPointPC12[i] <- crossdist(df2new$PC1[i], df2new$PC2[i],medCoords[1],medCoords[2])
+  
+}
+
+
+#this bit checks for zeros in lats and longs and cut out those samples
+row_sub = apply(data.frame(dms$meta$long), 1, function(row) all(row !=0 ))
+newdmslong <- data.frame(dms$meta$long)[row_sub,]
+row_sub = apply(data.frame(dms$meta$lat), 1, function(row) all(row !=0 ))
+newdmslat <- data.frame(dms$meta$lat)[row_sub,]
+
+#this bit looks for range of latlong values to zoom in on and calulcates range for zoom for ggmap
+divxlims <- c(min(na.omit(newdmslong))-0.6,max(na.omit(newdmslong))+1)
+divylims <- c(min(na.omit(newdmslat))-0.1,max(na.omit(newdmslat))+0.1)
+divxlimsrange <- abs(c(min(na.omit(newdmslong))-max(na.omit(newdmslong))))
+divylimsrange <- abs(c(min(na.omit(newdmslat))-max(na.omit(newdmslat))))
+
+
+coordinate_cities <- read.csv(paste0(maindir,"CityMapCordinates.csv"))
+sf_oz <- ozmap_data("states")
+
+#order and map expected het as a coloured range
+data11 <- data11[order(data11$exp_het),]
+
+ggplot(sf_oz, aes(fill="white")) + geom_sf() +
+  scale_fill_manual(values = "white", guide = "none") +
+  theme_void() + geom_sf() +
+  xlim(divxlims) + ylim(divylims)+
+  geom_point(data = df2new, mapping = aes(x = long, y = lat, color = DistPointPC12), size=5, alpha=0.9) +
+  scale_color_gradient(low="yellow", high="red", name="Dist From Centroid") +
+  geom_point(data=coordinate_cities, mapping = aes(x = long, y = lat), size=1)+
+  geom_text(data=coordinate_cities, mapping = aes(x = long, y = lat, label=City),hjust=0,nudge_y=0.03, size=3)
+
+
+ggsave(paste0(outputloc, "/PCA/", species, "Dist_from_PCA12_Centroid.tiff"), width = 10, height = 12, dpi = 300, units = "in")
+
+
+
+##### Create an all point PCA with map #####
+
+#Convert data format and perform PCA
+nd_gl  <- dart2gl(dms, RandRbase, species, dataset)
+nd_pca <- gl.pcoa(nd_gl, nf = 5, parallel = FALSE)
+
+#nf=5
+
+
+#creates two plots, PC1 VS PC2 coloured by population
+PCA_plots(nd_pca)
+
+
+
+
+
+
+
+
+##### Splitstree 
+##### LEA - Entropy, Barplot and Piechart #####
+
+
+samplethreshold <- 1
+
+##### Below lines remove sites with less than threshold number of samples, and subsample sites that are above the threshold
+# for (x in unique(na.omit(temp[, analysis]))) {
+#   pop_samples <- which(temp[, analysis] == x)
+#   if (length(pop_samples) < samplethreshold) {
+#     temp[, analysis]<-gsub(x, replacement=NA, temp[, analysis])
+#     print(paste0("Removing ",x, " with ", " with a sample size of ",length(pop_samples)," samples"))
+#   }
+#   if (length(pop_samples) == samplethreshold) {
+#     print(paste0("Keeping ",x, " with ", " with a sample size of ",length(pop_samples)," samples"))
+#   }
+#   if (length(pop_samples) > samplethreshold) {
+#     subsamplepops <- pop_samples[sample(1:length(pop_samples), size=samplethreshold, replace = F)]
+#     for (b in 1:length(pop_samples)){
+#       if (pop_samples[b] %in% subsamplepops == FALSE){
+#         temp[, analysis][pop_samples[b]] <- NA
+#       }
+#       print(paste0("Reducing ",x, " to a sample size of ", samplethreshold," samples"))
+#     }
+#   } else {}
+# }
+
+##### If you want to just remove any sites that are below the threshold (but keep individuals that are above a threshold, then unhash the below section)
+for (x in unique(na.omit(temp[, analysis]))) {
+  pop_samples <- which(temp[, analysis] == x)
+  if (length(pop_samples) < samplethreshold) {
+    temp[, analysis] <- gsub(x, replacement = NA, temp[, analysis])
+    print(paste0("Removing ", x, " with ", " with a sample size of ", length(pop_samples), " samples"))
+  } else {}
+}
+
+m1$analyses <- temp
+dm <- dart.meta.data.merge(d3, m1)
+fields <- c(analysis)
+dms <- data.by.meta.fields(dm, fields, RandRbase, species, dataset, object = analysis)
+# correct inconsistencies in J's scripts for naming treatment which is for naming files
+treatment <- paste0("raw_SNPFilt_1SNPperClone_Field_", analysis)
+dms$treatment <- treatment
+gta <- dms$gt
+
+
+
+kvalrange <- 1:25
+real_kvalrange <- 2:7
+
+LEA_dir <- paste0(outputloc,"/LEA/")
+if(!dir.exists(LEA_dir)){
+  dir.create(LEA_dir)
+}
+tempdir <- paste0(outputloc, "/temp/")
+if(!dir.exists(tempdir)){
+  dir.create(tempdir)
+}
+##check for LEA folder and if it does not exist, run LEA and create map plot
+lea_popdir <- paste0(maindir,species,"/popgen/",treatment,"/lea/")
+
+#delete current directory if it exists
+lea_popdir2 <- paste0(maindir,species,"/popgen/",treatment,"/")
+if (dir.exists(lea_popdir2)) {
+  unlink(lea_popdir2,recursive = TRUE)
+  cat("Existing Directory has been deleted to create new popgen file")
+}
+
+if (!dir.exists(lea_popdir)) {
+  nd_lea <- dart2lea(dms, RandRbase, species, dataset)
+  snmf1=snmf(nd_lea, K=kvalrange, entropy = TRUE, repetitions = 1, project = "new")
+  plot(snmf1, lwd = 6, col = "red", pch=1)
+  
+  require(cowplot)
+  require(plyr)
+  require(ggplot2)
+  require(car)
+  require(png)
+  require(grid)
+  require(gridExtra)
+  require(tiff)
+  require(oz)
+  require(mapplots)
+  
+  lea_popdir <- paste0(maindir,species,"/popgen/",treatment,"/lea/",species,"_",dataset,".snmfProject")
+  snmf_project <- load.snmfProject(lea_popdir)
+  
+  tiff(paste0(outputloc,"/LEA", "/",species, " LEA Entropy.tiff"), units="in", width=12, height=6, res=300)
+  par(mar=c(4,4,0,0)+0.1)
+  plot(snmf_project, lwd = 6, col = "red", pch=1,)
+  dev.off()
+  
+  ###this bit to tidy meta data - ignore pops with 1 indiv
+  {
+    dmsanalysis <- dms$meta$analyses[,analysis]
+    meta <- data.frame(table(dmsanalysis))
+    z=meta$Freq<2
+    
+    if (sum(z, na.rm = TRUE)>=1) {#if there are any pops with less than 2 indiv...
+      meta_lesthan2 <-as.character(meta[,1][meta$Freq<2]) #the pops with less than 2 indiv are...
+      myvars <- dmsanalysis%in%meta_lesthan2
+      newdmsanalysis <- dmsanalysis[!myvars]
+      excluded_sample_names <- dms$sample_names[myvars]
+      dms_d <- exclude.samples(dms, excluded_sample_names, remove_fixed_loci=TRUE)
+      cat("metadata contains pops less than 2 individual","\n")
+      print(meta_lesthan2)
+    } else {
+      meta_lesthan2 <-as.character(meta[,1][meta$Freq<2]) #the pops with less than 2 indiv are...
+      myvars <- dmsanalysis%in%meta_lesthan2
+      newdmsanalysis <- dms$meta$analyses[,analysis]
+      dms_d <-dms
+      excluded_sample_names <- NULL
+      cat("metadata is alright without removal of pops","\n")
+    }
+    
+    #making dataframe for  metadata without pops with less than 2 indiv
+    dms_meta <- cbind.data.frame(dms$meta$sample_names, dms$meta$analyses[,analysis],dms$meta$lat, dms$meta$long)
+    colnames(dms_meta) <- c("sample_names","site", "lat", "long")
+    #pp <- dms_meta[!myvars,]
+    #newdms_meta <- pp[apply(table(pp$site)>0,1,any),]
+    newdms_meta <- dms_meta[!myvars,]
+    colnames(newdms_meta) <- c("sample_names","site", "lat", "long")
+    npop <-length(unique(newdms_meta$site))
+    
+    #making dataframe of averages (lat/longs) for metadata
+    
+    newmetalatlongs <- ddply(newdms_meta,
+                             c("site"),
+                             summarise,
+                             lat  = mean(lat),
+                             long  = mean(long),
+                             N=length(site))
+  }
+  
+  
+  
+  
+  
+  for (j in 1:length(real_kvalrange)) {
+    kval <- real_kvalrange[j]
+    kval_col <- rainbow(kval)
+    # kval_col <- PCAcols
+    
+    ###choose the best run
+    ce           <- cross.entropy(snmf_project, K = kval)
+    Rbest        <- which.min(ce) # with the lowest cross entropy criterion
+    
+    lea_popdirRbest <- paste0(maindir,RandRbase,species,"/popgen/",treatment,"/lea/",species,"_",dataset,".snmf/K",kval,"/run",Rbest,"/")
+    longQfile <- paste0(lea_popdirRbest,species,"_",dataset,"_r",Rbest,".",kval,".Q")
+    d_kval <- read.csv(longQfile, header=FALSE, sep=" ")
+    
+    ##### draw LEA pies on map
+    d_kval_data <- data.frame(d_kval)
+    dmsanalysis <- dms$meta$analyses[,analysis]
+    #dmsanalysis2 <- substr(dmsanalysis,1,nchar(dmsanalysis)-11)
+    meta <- data.frame(table(dmsanalysis))
+    z=meta$Freq<2
+    
+    if (sum(z, na.rm = TRUE)>=1) { #if there are any pops with less than 2 indiv...
+      d_kval_data3 <- cbind(d_kval_data[!myvars,],newdms_meta)
+      d_kval2 <- d_kval[!myvars,] #original matrix without meta data for when making pies
+      # cat(paste0("there are pops with less than 2 individuals","\n"))
+    } else {
+      d_kval_data3 <- cbind(d_kval_data,newdms_meta)
+      # cat(paste0("pops are ok, more than 2 individuals","\n"))
+      d_kval2 <- d_kval}
+    
+    #d_kval_data3 <- d_kval_data3[order(-d_kval_data3$lat),]
+    d_kval_data3$site <- factor(d_kval_data3$site, levels = unique(d_kval_data3$site),ordered = TRUE)
+    
+    # d_kval3_dir <- paste0(maindir,LEA_dir,"/",species," LEA qmatrix k", kval,"_run",Rbest,"_plotted.csv")
+    # write.table(d_kval_data3,d_kval3_dir,sep="\t",row.names = F)
+    
+    d_kval_data_all <- cbind(d_kval_data,dms_meta)
+    d_all_dir <- paste0(LEA_dir,species," LEA qmatrix k", kval,"_run",Rbest,"_all.csv")
+    write.table(d_kval_data_all,d_all_dir,sep="\t",row.names = F)
+    
+    cat(paste0("lea with meta info saved in ",d_all_dir ,"\n"))
+    
+    coord <- data.frame(d_kval_data3$long, d_kval_data3$lat)
+    pop.factor <- factor(d_kval_data3$site)
+    pop = as.numeric(pop.factor)
+    qpop = matrix(NA, ncol = kval, nrow = npop)
+    coord.pop = matrix(NA, ncol = 2, nrow = npop)
+    
+    #calculate aver age q values for each pop
+    for (c in unique(pop)){
+      qpop[c,] = apply(d_kval2[pop == c,], 2, mean)#apply(m,2,mean), the "2" means get the mean of the columns
+      coord.pop[c,] = apply(coord[pop == c,], 2, mean)}
+    
+    ###save lea pop averaged qvalues
+    leapoppie_output <- cbind(qpop,coord.pop)
+    rownames(leapoppie_output)<-levels(d_kval_data3$site)
+    leapiescoord_file <-paste0(lea_popdir, species," LEApiescoord k=",kval,".csv")
+    write.table(leapoppie_output, leapiescoord_file)
+    
+    
+    tiff(paste0(tempdir, species," LEA pies_bar k=",kval,".tiff"), units="in", width=12, height=12, res=300)
+    par(mai=c(0,0,0,0))
+    plot(1, type="n", axes=F, xlab="", ylab="")
+    box()
+    par(new = TRUE)
+    par(fig=c(0,0.7,0,1)) #c(x1, x2, y1, y2)
+    # par(fig=c(0.1,0.8,0.1,0.9)) #c(x1, x2, y1, y2)
+    max_lat <- max(na.omit(newdms_meta$lat))
+    
+    row_sub_long = apply(data.frame(newdms_meta$long), 1, function(row) all(row !=0 ))
+    newdmslong <- data.frame(newdms_meta$long)[row_sub_long,]
+    row_sub_lat = apply(data.frame(newdms_meta$lat), 1, function(row) all(row !=0 ))
+    newdmslat <- data.frame(newdms_meta$lat)[row_sub_lat,]
+    
+    divxlims <- c(min(na.omit(newdmslong))-0.5,max(na.omit(newdmslong))+0.3)
+    divylims <- c(min(na.omit(newdmslat))-1,max(na.omit(newdmslat))+0.2)
+    
+    if (max_lat >= -20) {
+      oz(xlim=divxlims, ylim=divylims)
+      #text(min(na.omit(qmatrix_data3$long))-0.7, max(na.omit(qmatrix_data3$lat))+1.2, paste0(" k=", kval),font=c(3,2),cex=1)
+      
+    } else {
+      if ( max_lat >= -28 | max_lat >= -35) { #OR
+        nsw(xlim=divxlims, ylim=divylims)
+        # text(min(na.omit(qmatrix_data3$long))-0.1, max(na.omit(qmatrix_data3$lat))-0.1, paste0(" k=", kval),font=c(3,2),cex=1)
+        
+      } else {
+        oz(xlim=divxlims, ylim=divylims)
+        #text(min(na.omit(qmatrix_data3$long))-0.7, max(na.omit(qmatrix_data3$lat))+1.2, paste0(" k=", kval),font=c(3,2),cex=1)
+      }
+    }
+    
+    
+    
+    
+    
+    #draw pies on map
+    for (n in 1:npop){
+      add.pie(z = qpop[n,], x = coord.pop[n,1], y = coord.pop[n,2],
+              radius=(divylims[2]-divylims[1])/50,
+              labels = "",
+              density = 50, # removing density fills pie slices
+              col = kval_col)}
+    
+    d_kval <- read.csv(longQfile, header=FALSE, sep=" ")
+    d_kval2 <-d_kval[!myvars,]
+    d_kval2$lat <- newdms_meta$lat
+    d_kval2 <- d_kval2[order(-d_kval2$lat),]
+    d_kval2$lat <- NULL
+    colnames(d_kval2) <- NULL
+    rownames(d_kval2) <- NULL
+    
+    #####now drawing barplot
+    # par(fig=c(0.6,0.9,0.1,0.3),new = TRUE) #c(x1, x2, y1, y2)
+    par(fig=c(0.4,1,0,0.3),new = TRUE) #c(x1, x2, y1, y2)
+    barplot(t(as.matrix(d_kval2)), col=kval_col, border = NA, space = 0, xlab = "Individuals", ylab = "Admixture coefficients")
+    mtext(paste0("      k= ", kval), side=3, line=25, font=2, cex=5)
+    dev.off()
+    par(resetPar())
+    
+    
+  } #draw barplots, pies and save qmatrix csv files
+  
+  ####draw sampling distribution with numbering
+  tiff(paste0(outputloc,"/LEA/",species," samp_distrib.tiff"),
+       units="in", width=6, height=10, res=200)
+  #par(mar=c(0,2,0,0)) #c(bottom, left, top, right)
+  # par(mai=c(0.1,0.1,0.2,0.1))
+  par(mai=c(0.1, 0.1, 0.1, 0.1))
+  plot(1, type="n", axes=F, xlab="", ylab="")
+  par(new = TRUE)
+  # par(fig=c(0.1,0.8,0.1,0.9)) #c(x1, x2, y1, y2)
+  par(fig=c(0, 1, 0, 1)) #c(x1, x2, y1, y2)
+  oz(xlim=divxlims, ylim=divylims, lwd=0.5)
+  coord.pop <- data.frame(coord.pop)
+  colnames(coord.pop) <- c("long", "lat")
+  coord.pop$site <- sort(unique(d_kval_data3$site))
+  
+  if (file.exists(paste0(tempdir,"site_number.csv"))) {
+    rep2 <- read.csv(paste0(tempdir,"site_number.csv"),sep=" ")
+  } else {
+    dms_meta <- cbind.data.frame(dms$meta$sample_names, dms$meta$analyses[,analysis],dms$meta$lat, dms$meta$long)
+    colnames(dms_meta) <- c("sample_names","site", "lat", "long")
+    dms_meta$lat <- as.numeric(dms_meta$lat)
+    dms_meta$long <- as.numeric(dms_meta$long)
+    ###
+    dms_meta2 <- dms_meta[order(dms_meta$site), ]
+    dms_meta2 <- dms_meta2[order(-dms_meta2$lat), ]
+    ####make sure your rep has nums_n_site which is in df2!!!
+    dms_meta2$site <- factor(dms_meta2$site, levels = unique(dms_meta2$site),ordered = TRUE)
+    
+    rep <- ddply(dms_meta2,
+                 .(site),
+                 summarise,
+                 lat  = mean(lat),
+                 long = mean(long))
+    rep2 <- rep[order(-rep$lat), ]
+    x <- length(unique(dms_meta2$site))
+    bgcols = rainbow(x)
+    rep2$nums_n_site <- paste0(1:x, ": ", rep2$site)
+    rep2$num_site <- 1:x
+    write.table(rep2, paste0(tempdir,"site_number_fromLEA.csv"))
+  }
+  
+  coord.pop11 <- merge(coord.pop,rep2[,c("site","nums_n_site","num_site")],by="site")
+  
+  #coord.pop <- coord.pop[order(-coord.pop$lat),]
+  coord.pop11$lab <- coord.pop11$num_site
+  
+  points(coord.pop11$long,coord.pop11$lat,pch=21,lwd=0.2,bg="blue",cex=1)
+  #text(x=150.8758, y=-34.40813+0.1,labels="2 to 29",pos=3,cex=0.7,font=4)
+  
+  coord.pop11 <- coord.pop11[complete.cases(coord.pop11), ]#remove latlongs that are NAs
+  pointLabel(coord.pop11$long, coord.pop11$lat, labels = paste("  ", coord.pop11$lab, "  ", sep=""), cex=0.7, font=4,offset=0.25)
+  
+  if(exists("excluded_sample_names")) {
+    excluded1pops <- dms$meta$analyses[,analysis][(dms$meta$sample_names%in%excluded_sample_names)]
+    # cat("samples from 1indiv pop excluded in map","\n")
+  }else {
+    excluded1pops <- NULL
+  }
+  
+  if(sum(is.na(newdms_meta$lat))>0){
+    excludedNApops <- as.character(unique(newdms_meta$site[is.na(newdms_meta$lat)])) #pops excluded from map because latlongs are NA
+    # cat("samples wihtout latlongs excluded in map","\n")
+  } else {
+    excludedNApops <- NULL
+  }
+  
+  if(exists("excludedNApops") | exists("excluded1pops")){
+    par(fig=c(0.1, 0.9, 0.1, 0.9),new = TRUE) #c(x1, x2, y1, y2)
+    # par(fig=c(0,0.5,0,0.5),new = TRUE) #c(x1, x2, y1, y2)
+    all_excluded <- c(excluded1pops,excludedNApops)
+    rep2$site <- as.factor(rep2$site)
+    all_ex_nums <-  rep2$nums_n_site[(rep2$site%in%all_excluded)]
+    all_ex_nums2 <- paste0(all_ex_nums, "\n",collapse = "")
+    all_ex_nums3 <- paste0("Not included:\n",all_ex_nums2)
+    mtext( all_ex_nums3,cex = 0.7,side=1,adj=0)
+    dev.off()
+  } else {
+    dev.off()
+  }
+  
+  # cat(paste0("sampled distribution figure done!","\n"))
+  
+  ##################TABLE
+  coord.pop2 <- cbind.data.frame(coord.pop11$lab,coord.pop11$site,coord.pop11$lat,coord.pop11$long)
+  colnames(coord.pop2)<-c("","site","lat","long")
+  coord.pop2 <- coord.pop2[order(-coord.pop2$lat),]
+  tg = gridExtra::tableGrob(coord.pop2,rows = NULL)
+  h = grid::convertHeight(sum(tg$heights), "in", TRUE)+0.5
+  w = grid::convertWidth(sum(tg$widths), "in", TRUE)+0.5
+  ggplot2::ggsave(paste0(outputloc,"/LEA/",species," samp_distrib2.tiff"), tg, width=w, height=h)
+  # cat(paste0("samp_distrib2 figure done!","\n"))
+  
+  ##################combine with sampl_dist
+  setwd(outputloc)
+  
+  loc_1<- dir(path = "LEA", pattern = "samp_distrib2.tiff$", full.names = TRUE, recursive = TRUE) ###must set working directory to make readPNG work
+  loc_2 <- dir(path = "LEA", pattern = "samp_distrib.tiff$", full.names = TRUE, recursive = TRUE) ###must set working directory to make readPNG work
+  loc_3 <- dir(path = "LEA", pattern = "Entropy.tiff$", full.names = TRUE, recursive = TRUE) ###must set working directory to make readPNG work
+  
+  lloo <- c(loc_3)
+  plots <- lapply(ll <- lloo,function(x){
+    img <- as.raster(readTIFF(x)) ##change this to readTIFF if readPNG doesnt work
+    rasterGrob(img, interpolate = FALSE)
+  })
+  #lay <- rbind(c(2,2,1,1),c(2,2,1,1),c(2,2,1,1),c(3,3,3,3))
+  lay <- rbind(c(1,1))
+  ggsave(paste0("LEA/",species, " distrib_entrp.tiff"),
+         width=8, height=10, units = "in", device='tiff',dpi = 300,
+         marrangeGrob(grobs = plots, layout_matrix = lay,top=textGrob(paste0(analysis," LEA outputs"), gp=gpar(fontsize=20,fontface=4))))
+  
+  # cat(paste0("combined map and site for more lea outputs!","\n"))
+  
+  
+  ####combine all pies
+  piedatalist=list()
+  pie_ls_files <- c("LEA pies_bar k=2.tiff$",
+                    "LEA pies_bar k=3.tiff$",
+                    "LEA pies_bar k=4.tiff$",
+                    "LEA pies_bar k=5.tiff$",
+                    "LEA pies_bar k=6.tiff$",
+                    "LEA pies_bar k=7.tiff$")
+  
+  for (f in 1:length(pie_ls_files)) {
+    ll_filenamesleapies<- dir(path = "temp", pattern = pie_ls_files[f], full.names = TRUE, recursive = TRUE) ###must set working directory to make readPNG work
+    piedatalist[[f]] <- ll_filenamesleapies
+  }
+  
+  pie_plots <- lapply(ll <- piedatalist,function(x){
+    img <- as.raster(readTIFF(x)) ##change this to readTIFF if readPNG doesnt work
+    rasterGrob(img, interpolate = FALSE)
+  })
+  
+  
+  lay <- rbind(c(1,2,3),c(4,5,6)) #for kvals from 2 to 7
+  ggsave(paste0("LEA/",species, " LEA pies_bar_ALL.tiff"),
+         width=16, height=14,dpi = 300, units = "in", device='tiff',
+         marrangeGrob(grobs = pie_plots, layout_matrix = lay,top=NULL))
+  # cat(paste0("combined all lea piebar plots!","\n"))
+  
+  
+  ###combine LEA figures, pies for k equals 2,3,4,5, sampling distrib, entropy into a single figure
+  datalist=list()
+  
+  ls_files <- c("distrib_entrp.tiff$",
+                "LEA pies_bar_ALL.tiff$")
+  
+  for (g in 1:length(ls_files)) {
+    ll_filenames <- dir(path = "LEA", pattern = ls_files[g], full.names = TRUE, recursive = TRUE) ###must set working directory to make readPNG work
+    datalist[[g]] <- ll_filenames
+  }
+  locsLEA <- unlist(datalist)
+  
+  plots <- lapply(ll <- locsLEA,function(x){
+    img <- as.raster(readTIFF(x)) ##change this to readTIFF if readPNG doesnt work
+    rasterGrob(img, interpolate = FALSE)
+  })
+  
+  #layoo <- rbind(c(1,2))
+  layoo <- rbind(c(1,2,2,2),c(1,2,2,2),c(1,2,2,2),c(1,2,2,2))
+  
+  ggsave(paste0(outputloc,"/LEA/",species, " lea k2345loc bar test.tiff"),
+         width=11.7, height=8.3,dpi = 600, units = "in", device='tiff',
+         marrangeGrob(grobs = plots, layout_matrix = layoo,top=NULL))
+  cat(paste0("all LEA plots done!","\n"))
+  
+  # locsLEA
+  #"LEA/PersHirs2 distrib_entrp.tiff"    "LEA/PersHirs2 LEA pies_bar_ALL.tiff"
+  # pielocsLEA
+  #[1] "temp/PersHirs2 LEA pies_bar k=2.tiff" "temp/PersHirs2 LEA pies_bar k=3.tiff"
+  # [3] "temp/PersHirs2 LEA pies_bar k=4.tiff" "temp/PersHirs2 LEA pies_bar k=5.tiff"
+  # [5] "temp/PersHirs2 LEA pies_bar k=6.tiff" "temp/PersHirs2 LEA pies_bar k=7.tiff"
+  # [7] "temp/PersHirs2 LEA pies_bar k=8.tiff"
+  # lloo
+  # [1] "LEA/PersHirs2 samp_distrib2.tiff" "LEA/PersHirs2 samp_distrib.tiff"
+  
+  
+  
+  # file.remove(locsLEA)
+  # pielocsLEA <- unlist(piedatalist)
+  # file.remove(pielocsLEA)
+  # file.remove(lloo)
+  
+  setwd(maindir)
+  
+  
+} else {
+  print("remove LEA folder under popgen folder first!!!")
+  #or if you have already run LEA, and just want to replot everything?
+}
+
+
+
+
+
+
+
+
+##### Kinship analysis and UPGMA #####
+
+if(!dir.exists(paste0(outputloc,"/Kinship/"))){
+  dir.create(paste0(outputloc,"/Kinship/"))
+}
+
+dC <- dms
+
+#UPGMA
+library(ape)
+library(phangorn)
+
+rownames(dC$gt) <- paste( rownames(dms$gt),dms$meta$analyses[,analysis],sep="_")
+SNAPPC <- dist(dC$gt)
+tCUNNINGHAMII <- upgma(SNAPPC)
+tCUNNINGHAMII <- ladderize(tCUNNINGHAMII, right = FALSE)
+is_tip <- tCUNNINGHAMII$edge[,2] <= length(tCUNNINGHAMII$tip.label)
+ordered_tips <- tCUNNINGHAMII$edge[is_tip, 2]
+tip_order <- tCUNNINGHAMII$tip.label[ordered_tips]
+
+par(mar=c(0,0,0,0))
+plot(tCUNNINGHAMII, cex=0.1)
+dev.off()
+
+#kin
+#note: if your populations are highly differentiated, it is best to run kinship on individual populations not the entire species.
+#expect that a clonal population might have an excess of heterozygotes because if the genet has 50% heterozygotes,
+#and the genet has multiple ramets, heterozygosity estimate of the population is more likely higher
+#as compared to a non-clonal population of genets with different number of heterozygotes
+#e.g. (50% x 3 vs 50%,30%,10%)
+
+
+iIBD      <- individual.pw.IBD(dC,RandRbase,species,dataset)
+kin       <-  iIBD$kinship #note if there is no kinship matrix,
+#it could be because there are no SNPs to compare
+#or the snpgdsIBDMoM() in individual.pw.IBD script doesnt have: kinship=TRUE
+
+tiff(file = paste0(outputloc,"/Kinship/", analysis,"_Kinship_heatmap.tiff"),
+     width = 11.7, height = 8.3, res = 300, units = "in")
+
+#adds the row and column names corresponding to the tree to the spacial matrix
+rownames(kin) <- paste0(dC$meta$sample_names,"_",dC$meta$analyses[,analysis])
+colnames(kin) <- dC$meta$sample_names
+# order kinship matrix using the tree
+ik <- match(tip_order, rownames(kin))
+ko <- kin[ik,ik]
+
+#kinship heatmap
+library(phytools)
+
+HeatmapPlot <- phylo.heatmap(tCUNNINGHAMII,as.matrix(ko),fsize=0.2,ylim=c(0,1.1),split=c(0.2,0.80),grid=F)
+HeatmapPlot
+
+dev.off()
+
+
+write.table(as.matrix(ko),file = paste0(outputloc, "/Kinship/", analysis," kinship.csv"),row.names = T,col.names = T, sep = ",")
+
+
+
+
+
+
+
+
+
+
+
+##### Neighbour Joining #####
+
+if(!dir.exists(paste0(outputloc,"/NJTree/"))){
+  dir.create(paste0(outputloc,"/NJTree/"))
+}
+
+gl_gm  <- dart2gl(dms, RandRbase, species, dataset)
+tre <- nj(dist(as.matrix(gl_gm))) #generates  neighbor-joining tree estimate from euclidean matrix of the genotype data (genlight format)
+# plot(tre, type="fan", cex=0.5)
+plot(tre, type="phylogram", cex=0.5)
+
+##########colour code according to PCA values
+#PCA
+nd_gl  <- dart2gl(dms, RandRbase, species, dataset)
+nd_pca <- glPca(nd_gl, nf=5, parallel=FALSE)
+myCol <- colorplot(nd_pca$scores,nd_pca$scores, transp=FALSE, cex=2)
+
+
+tiff(paste0(outputloc,"/NJTree/",species," NJ_Tree_population.tiff"), units="in", width=11.7, height=8.3, res=300)
+
+# scatter(nd_pca, xax=2,yax=3, posi="topleft", cex=0.1)
+
+par(mfrow=c(1,2))
+plot(nd_pca$scores[,1], nd_pca$scores[,2], xlab="PC1", ylab="PC2",col=myCol, pch=16)
+text(nd_pca$scores[,1], nd_pca$scores[,2], labels=dms$meta$analyses[,analysis], pos=3, cex=0.5)
+
+#NJ tree
+plot(tre, typ="phylogram", show.tip=TRUE, no.margin=TRUE, cex=0.7)
+tiplabels(pch=20, col=myCol, cex=2)
+
+
+dev.off()
+
+
+
+tiff(paste0(outputloc,"/NJTree/",species,"_NJ_Tree_PCA.tiff"), units="in", width=11.7, height=7, res=300)
+
+##########colour code according to latitude
+dms_meta <- cbind.data.frame(dms$meta$sample_names, dms$meta$analyses[,analysis],dms$meta$lat, dms$meta$long)
+colnames(dms_meta) <- c("sample_names","site", "lat", "long")
+
+rbPal <- colorRampPalette(c('blue','red'))
+dms_meta$col <- rbPal(50)[as.numeric(cut(dms_meta$lat,breaks = 50))]
+
+#NJ tree
+par(mfrow=c(1,2), ## only works if plot out and not export tiff
+    mar = c(5, 5, 5, 2),
+    oma=c(0, 0, 0, 0)) #margins between plot
+
+PCAVals <- data.frame(cbind(nd_pca$scores[,1], nd_pca$scores[,2]))
+colnames(PCAVals) <- c("PC1", "PC2")
+
+plot(PCAVals, xlab="PC1", ylab="PC2",col=dms_meta$col, pch=16)
+pointLabel(PCAVals, labels=dms$sample_name, offset=0.1, cex=0.2)
+mtext(paste0(analysis), side=3, line=2, cex=1)
+mtext(paste0("NJ Tree with Latitude PCA"), side=3, line=3, cex=1.5)
+
+
+par(mar = c(0, 0, 0, 0))
+plot(tre, typ="phylogram", show.tip=TRUE, no.margin=TRUE, cex=0.3)
+tiplabels(pch=20, col=dms_meta$col, cex=1)
+
+
+dev.off()
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### FST with at least 1 sample per pop #####
+
+m1 <- read.meta.data(d3, RandRbase, species, dataset, fields = as.numeric(ncol(metafile)-4))
+temp<-as.data.frame(m1$analyses)
+
+#set a sample threshold for each pop:
+samplethreshold <-1# chnage this to what number of samples you want toi have uniform across all pops
+
+
+
+# #### Below lines remove sites with less than threshold number of samples, and subsample sites that are above the threshold
+# for (x in unique(na.omit(temp[, analysis]))) {
+#   pop_samples <- which(temp[, analysis] == x)
+#   if (length(pop_samples) < samplethreshold) {
+#     temp[, analysis]<-gsub(x, replacement=NA, temp[, analysis])
+#     print(paste0("Removing ",x, " with ", " with a sample size of ",length(pop_samples)," samples"))
+#   }
+#   if (length(pop_samples) == samplethreshold) {
+#     print(paste0("Keeping ",x, " with ", " with a sample size of ",length(pop_samples)," samples"))
+#   }
+#   if (length(pop_samples) > samplethreshold) {
+#     subsamplepops <- pop_samples[sample(1:length(pop_samples), size=samplethreshold, replace = F)]
+#     for (b in 1:length(pop_samples)){
+#       if (pop_samples[b] %in% subsamplepops == FALSE){
+#         temp[, analysis][pop_samples[b]] <- NA
+#       }
+#       print(paste0("Reducing ",x, " to a sample size of ", samplethreshold," samples"))
+#     }
+#   } else {}
+# }
+# 
+# 
+
+
+## If you want to just remove any sites that are below the threshold (but keep individuals that are above a threshold, then unhash the below section)
+for (x in unique(na.omit(temp[, analysis]))) {
+  pop_samples <- which(temp[, analysis] == x)
+  if (length(pop_samples) < samplethreshold) {
+    temp[, analysis]<-gsub(x, replacement=NA, temp[, analysis])
+    print(paste0("Removing ",x, " with ", " with a sample size of ",length(pop_samples)," samples"))
+  } else {}
+}
+
+m1$analyses<-temp
+dm        <- dart.meta.data.merge(d3, m1)
+fields    <- c(analysis)
+dms     <- data.by.meta.fields(dm, fields, RandRbase, species, dataset, object=analysis); print(dms$meta$analyses[,analysis])
+
+ 
+# Generate pairwise fst for populations
+# Determine if IBD is significant - Mantel test
+pFst <- population.pw.Fst(dms, dms$meta$analyses[, analysis], RandRbase, species, dataset)
+pS <- population.pw.spatial.dist(dms, dms$meta$analyses[, analysis])
+
+fst_dir <- paste0(outputloc, "/fst_atleast1Samp/")
+if (!dir.exists(fst_dir)) {
+  dir.create(fst_dir)
+}
+
+# Plot of fst vs geographic distance
+tiff(paste0(fst_dir, species, "_fstplot_atleast1Samps.tiff"),
+     units = "in", width = 13.3, height = 7.5, res = 300)
+par(mfrow = c(1, 2))
+diag(pS$S) <- NA
+diag(pFst$Fst) <- NA
+
+Fst_sig <- cbind(melt(pS$S), unlist(as.list(pFst$Fst)))
+
+colnames(Fst_sig)[3] <- "Geo_dist"
+colnames(Fst_sig)[4] <- "Fst"
+Fst_sig$Geo_dist2 <- Fst_sig$Geo_dist / 1000
+
+plot(Fst_sig$Geo_dist2, Fst_sig$Fst, xlab = "distance (km)", ylab = "Fst", cex = 1,
+     font = 4, cex.main = 1)
+title(main = paste0(species, " pairwise fst plots"), adj = 0.001, font.main = 4)
+man <- mantel(xdis = pS$S, ydis = pFst$Fst, permutations = 999, na.rm = TRUE)
+legend("bottomright", bty = "n", cex = 0.8, text.col = "blue", element_text(face = "bold"),
+       legend = paste("Mantel statistic r is ",
+                      format(man$statistic, digits = 4),
+                      " P =", format(man$signif)))
+
+# Plot of linearised fst vs geographic distance
+Fst_sig <- cbind(melt(pS$S), unlist(as.list(pFst$Fst)))
+colnames(Fst_sig)[3] <- "Geo_dist"
+colnames(Fst_sig)[4] <- "Fst"
+Fst_sig$lin_fst <- Fst_sig$Fst / (1 - Fst_sig$Fst)
+Fst_sig$Geo_dist2 <- Fst_sig$Geo_dist / 1000
+Fst_sig$log10Geo_dist <- log10(Fst_sig$Geo_dist2)
+write.table(Fst_sig,
+            paste0(fst_dir, species, " fst_geo data.csv"))
+plot(Fst_sig$log10Geo_dist, Fst_sig$lin_fst, xlab = "log10(distance)",
+     ylab = "Linearised Fst", font = 4, cex.main = 1)
+man2 <- mantel(xdis = pS$S, ydis = (pFst$Fst) / (1 - pFst$Fst), permutations = 999, na.rm = TRUE)
+legend("bottomright", bty = "n", cex = 0.8, text.col = "blue", element_text(face = "bold"),
+       legend = paste("Mantel statistic r is ",
+                      format(man2$statistic, digits = 4),
+                      " P =", format(man2$signif)))
+dev.off()
+
+cat(paste0("pairwise fst and linearised fst drawn!", "\n"))
+
+# Heatmap of just geographic distance or fst
+par(mfrow = c(2, 1), oma = c(0, 0, 1, 0))
+geo_d <- pS$S
+geo_d[upper.tri(geo_d)] <- NA
+rownames(geo_d) <- colnames(pS$S)
+
+dimnames <- list(var1 = colnames(pS$S), var2 = colnames(pS$S))
+mat <- matrix(geo_d, ncol = length(colnames(geo_d)), nrow = length(colnames(geo_d)), dimnames = dimnames)
+df <- as.data.frame(as.table(mat))
+
+p1 <- ggplot(df, aes(var1, var2)) +
+  geom_tile(aes(fill = Freq), colour = "white") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1)) +
+  xlab("") + ylab("") +
+  theme(legend.position = "none", axis.text = element_text(size = 5), plot.title = element_text(face = "bold.italic")) +
+  ggtitle(paste0(species, " ", analysis, " heatmaps", "\n", "heatmap of pairwise geographic distance"))
+
+genetic_d <- pFst$Fst
+genetic_d[upper.tri(genetic_d)] <- NA
+rownames(genetic_d) <- colnames(pFst$Fst)
+
+dimnames2 <- list(var1 = colnames(pFst$Fst), var2 = colnames(pFst$Fst))
+mat2 <- matrix(genetic_d, ncol = length(colnames(geo_d)), nrow = length(colnames(geo_d)), dimnames = dimnames)
+df2 <- as.data.frame(as.table(mat2))
+df3 <- df2[complete.cases(df2$Freq),]
+
+p2 <- ggplot(df3, aes(var1, var2)) +
+  geom_tile(aes(fill = Freq), colour = "white", na.rm = TRUE) +
+  scale_fill_gradient(low = "white", high = "red") +
+  geom_text(aes(label = round(Freq, 3)), size = 2, df3) +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1)) +
+  xlab("") + ylab("") +
+  theme(legend.position = "none", axis.text = element_text(size = 5),
+        plot.title = element_text(face = "bold.italic")) + ggtitle("heatmap of pairwise Fst with atleast 1 sample per pop")
+
+plot_grid(p1, p2, ncol = 1)
+
+ggsave(paste0(fst_dir, species, "_fstheatmaps_atleast1Samps.tiff"),
+       width = 13.3, height = 7.5, dpi = 300, units = "in", device = 'tiff')
+
+cat(paste0("geographic and pairwise fst heatmap drawn!", "\n"))
+
+####save matrix
+genetic_d <-pFst$Fst
+write.table(genetic_d, paste0(fst_dir,species," fst matrix.csv"),sep = ",")
+geo_d <-pS$S
+geo_d[upper.tri(geo_d)] <-geo_d[lower.tri(geo_d)]
+new <- matrix(NA, nrow = dim(geo_d)[1], ncol = dim(geo_d)[2])
+new[upper.tri(new)] <- geo_d[upper.tri(geo_d)]
+new[lower.tri(new)] <- genetic_d[lower.tri(genetic_d)]
+colnames(new) <- colnames(geo_d)
+rownames(new) <- rownames(geo_d)
+
+write.table(new, paste0(fst_dir,species," heatmap matrix.csv"),sep = ",")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### FST with limiting 5 samples per pop #####
+
+m1 <- read.meta.data(d3, RandRbase, species, dataset, fields = as.numeric(ncol(metafile)-4))
+temp<-as.data.frame(m1$analyses)
+
+#set a sample threshold for each pop:
+samplethreshold <-5# chnage this to what number of samples you want toi have uniform across all pops
+
+
+#### Below lines remove sites with less than threshold number of samples, and subsample sites that are above the threshold
+for (x in unique(na.omit(temp[, analysis]))) {
+  pop_samples <- which(temp[, analysis] == x)
+  if (length(pop_samples) < samplethreshold) {
+    temp[, analysis]<-gsub(x, replacement=NA, temp[, analysis])
+    print(paste0("Removing ",x, " with ", " with a sample size of ",length(pop_samples)," samples"))
+  }
+  if (length(pop_samples) == samplethreshold) {
+    print(paste0("Keeping ",x, " with ", " with a sample size of ",length(pop_samples)," samples"))
+  }
+  if (length(pop_samples) > samplethreshold) {
+    subsamplepops <- pop_samples[sample(1:length(pop_samples), size=samplethreshold, replace = F)]
+    for (b in 1:length(pop_samples)){
+      if (pop_samples[b] %in% subsamplepops == FALSE){
+        temp[, analysis][pop_samples[b]] <- NA
+      }
+      print(paste0("Reducing ",x, " to a sample size of ", samplethreshold," samples"))
+    }
+  } else {}
+}
+
+
+
+
+# ## If you want to just remove any sites that are below the threshold (but keep individuals that are above a threshold, then unhash the below section)
+# for (x in unique(na.omit(temp[, analysis]))) {
+#   pop_samples <- which(temp[, analysis] == x)
+#   if (length(pop_samples) < samplethreshold) {
+#     temp[, analysis]<-gsub(x, replacement=NA, temp[, analysis])
+#     print(paste0("Removing ",x, " with ", " with a sample size of ",length(pop_samples)," samples"))
+#   } else {}
+# }
+
+m1$analyses<-temp
+dm        <- dart.meta.data.merge(d3, m1)
+fields    <- c(analysis)
+dms     <- data.by.meta.fields(dm, fields, RandRbase, species, dataset, object=analysis); print(dms$meta$analyses[,analysis])
+
+
+# Generate pairwise fst for populations
+# Determine if IBD is significant - Mantel test
+pFst <- population.pw.Fst(dms, dms$meta$analyses[, analysis], RandRbase, species, dataset)
+pS <- population.pw.spatial.dist(dms, dms$meta$analyses[, analysis])
+
+fst_dir <- paste0(outputloc, "/fst_limiting5Samps/")
+if (!dir.exists(fst_dir)) {
+  dir.create(fst_dir)
+}
+
+# Plot of fst vs geographic distance
+tiff(paste0(fst_dir, species, "_fstplot_limiting5Samps.tiff"),
+     units = "in", width = 13.3, height = 7.5, res = 300)
+par(mfrow = c(1, 2))
+diag(pS$S) <- NA
+diag(pFst$Fst) <- NA
+
+Fst_sig <- cbind(melt(pS$S), unlist(as.list(pFst$Fst)))
+
+colnames(Fst_sig)[3] <- "Geo_dist"
+colnames(Fst_sig)[4] <- "Fst"
+Fst_sig$Geo_dist2 <- Fst_sig$Geo_dist / 1000
+
+plot(Fst_sig$Geo_dist2, Fst_sig$Fst, xlab = "distance (km)", ylab = "Fst", cex = 1,
+     font = 4, cex.main = 1)
+title(main = paste0(species, " pairwise fst plots"), adj = 0.001, font.main = 4)
+man <- mantel(xdis = pS$S, ydis = pFst$Fst, permutations = 999, na.rm = TRUE)
+legend("bottomright", bty = "n", cex = 0.8, text.col = "blue", element_text(face = "bold"),
+       legend = paste("Mantel statistic r is ",
+                      format(man$statistic, digits = 4),
+                      " P =", format(man$signif)))
+
+# Plot of linearised fst vs geographic distance
+Fst_sig <- cbind(melt(pS$S), unlist(as.list(pFst$Fst)))
+colnames(Fst_sig)[3] <- "Geo_dist"
+colnames(Fst_sig)[4] <- "Fst"
+Fst_sig$lin_fst <- Fst_sig$Fst / (1 - Fst_sig$Fst)
+Fst_sig$Geo_dist2 <- Fst_sig$Geo_dist / 1000
+Fst_sig$log10Geo_dist <- log10(Fst_sig$Geo_dist2)
+write.table(Fst_sig,
+            paste0(fst_dir, species, " fst_geo data.csv"))
+plot(Fst_sig$log10Geo_dist, Fst_sig$lin_fst, xlab = "log10(distance)",
+     ylab = "Linearised Fst", font = 4, cex.main = 1)
+man2 <- mantel(xdis = pS$S, ydis = (pFst$Fst) / (1 - pFst$Fst), permutations = 999, na.rm = TRUE)
+legend("bottomright", bty = "n", cex = 0.8, text.col = "blue", element_text(face = "bold"),
+       legend = paste("Mantel statistic r is ",
+                      format(man2$statistic, digits = 4),
+                      " P =", format(man2$signif)))
+dev.off()
+
+cat(paste0("pairwise fst and linearised fst drawn!", "\n"))
+
+# Heatmap of just geographic distance or fst
+par(mfrow = c(2, 1), oma = c(0, 0, 1, 0))
+geo_d <- pS$S
+geo_d[upper.tri(geo_d)] <- NA
+rownames(geo_d) <- colnames(pS$S)
+
+dimnames <- list(var1 = colnames(pS$S), var2 = colnames(pS$S))
+mat <- matrix(geo_d, ncol = length(colnames(geo_d)), nrow = length(colnames(geo_d)), dimnames = dimnames)
+df <- as.data.frame(as.table(mat))
+
+p1 <- ggplot(df, aes(var1, var2)) +
+  geom_tile(aes(fill = Freq), colour = "white") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1)) +
+  xlab("") + ylab("") +
+  theme(legend.position = "none", axis.text = element_text(size = 5), plot.title = element_text(face = "bold.italic")) +
+  ggtitle(paste0(species, " ", analysis, " heatmaps", "\n", "heatmap of pairwise geographic distance limiting 5 samples per pop"))
+
+genetic_d <- pFst$Fst
+genetic_d[upper.tri(genetic_d)] <- NA
+rownames(genetic_d) <- colnames(pFst$Fst)
+
+dimnames2 <- list(var1 = colnames(pFst$Fst), var2 = colnames(pFst$Fst))
+mat2 <- matrix(genetic_d, ncol = length(colnames(geo_d)), nrow = length(colnames(geo_d)), dimnames = dimnames)
+df2 <- as.data.frame(as.table(mat2))
+df3 <- df2[complete.cases(df2$Freq),]
+
+p2 <- ggplot(df3, aes(var1, var2)) +
+  geom_tile(aes(fill = Freq), colour = "white", na.rm = TRUE) +
+  scale_fill_gradient(low = "white", high = "red") +
+  geom_text(aes(label = round(Freq, 3)), size = 2, df3) +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1)) +
+  xlab("") + ylab("") +
+  theme(legend.position = "none", axis.text = element_text(size = 5),
+        plot.title = element_text(face = "bold.italic")) + ggtitle("heatmap of pairwise Fst")
+
+plot_grid(p1, p2, ncol = 1)
+
+ggsave(paste0(fst_dir, species, "_fstheatmaps_limiting5Samps.tiff"),
+       width = 13.3, height = 7.5, dpi = 300, units = "in", device = 'tiff')
+
+cat(paste0("geographic and pairwise fst heatmap drawn!", "\n"))
+
+####save matrix
+genetic_d <-pFst$Fst
+write.table(genetic_d, paste0(fst_dir,species," fst matrix.csv"),sep = ",")
+geo_d <-pS$S
+geo_d[upper.tri(geo_d)] <-geo_d[lower.tri(geo_d)]
+new <- matrix(NA, nrow = dim(geo_d)[1], ncol = dim(geo_d)[2])
+new[upper.tri(new)] <- geo_d[upper.tri(geo_d)]
+new[lower.tri(new)] <- genetic_d[lower.tri(genetic_d)]
+colnames(new) <- colnames(geo_d)
+rownames(new) <- rownames(geo_d)
+
+write.table(new, paste0(fst_dir,species," heatmap matrix.csv"),sep = ",")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### DIVERSITY Stats with at least 5 samples per pop #####
+
+m1 <- read.meta.data(d3, RandRbase, species, dataset, fields = as.numeric(ncol(metafile)-4))
+temp<-as.data.frame(m1$analyses)
+
+#set a sample threshold for each pop:
+samplethreshold <-5# chnage this to what number of samples you want toi have uniform across all pops
+
+
+
+# #### Below lines remove sites with less than threshold number of samples, and subsample sites that are above the threshold
+# for (x in unique(na.omit(temp[, analysis]))) {
+#   pop_samples <- which(temp[, analysis] == x)
+#   if (length(pop_samples) < samplethreshold) {
+#     temp[, analysis]<-gsub(x, replacement=NA, temp[, analysis])
+#     print(paste0("Removing ",x, " with ", " with a sample size of ",length(pop_samples)," samples"))
+#   }
+#   if (length(pop_samples) == samplethreshold) {
+#     print(paste0("Keeping ",x, " with ", " with a sample size of ",length(pop_samples)," samples"))
+#   }
+#   if (length(pop_samples) > samplethreshold) {
+#     subsamplepops <- pop_samples[sample(1:length(pop_samples), size=samplethreshold, replace = F)]
+#     for (b in 1:length(pop_samples)){
+#       if (pop_samples[b] %in% subsamplepops == FALSE){
+#         temp[, analysis][pop_samples[b]] <- NA
+#       }
+#       print(paste0("Reducing ",x, " to a sample size of ", samplethreshold," samples"))
+#     }
+#   } else {}
+# }
+# 
+# 
+
+
+## If you want to just remove any sites that are below the threshold (but keep individuals that are above a threshold, then unhash the below section)
+for (x in unique(na.omit(temp[, analysis]))) {
+  pop_samples <- which(temp[, analysis] == x)
+  if (length(pop_samples) < samplethreshold) {
+    temp[, analysis]<-gsub(x, replacement=NA, temp[, analysis])
+    print(paste0("Removing ",x, " with ", " with a sample size of ",length(pop_samples)," samples"))
+  } else {}
+}
+
+m1$analyses<-temp
+dm        <- dart.meta.data.merge(d3, m1)
+fields    <- c(analysis)
+dms     <- data.by.meta.fields(dm, fields, RandRbase, species, dataset, object=analysis); print(dms$meta$analyses[,analysis])
+
+#correct inconsistencies in J's scripts for naming treatment which is for naming files
+treatment <- paste0("raw_SNPFilt_1SNPperClone_Field_", analysis)
+dms$treatment <- treatment
+gta <- dms$gt
+
+gp   <- dart2genepop(dms, RandRbase, species, dataset, dms$meta$analyses[,analysis])
+
+#calculate basic pop gen stats
+bs <- basicStats(infile = gp, outfile = NULL,
+                 fis_ci = FALSE, ar_ci = TRUE,
+                 ar_boots = 999,
+                 rarefaction = FALSE, ar_alpha = 0.05)
+
+#create map plot and table
+
+divrda_dir <- paste0(RandRbase,species,"/popgen/",treatment,"/genepop/bs.rda")
+save(bs, file = divrda_dir)
+
+if(!dir.exists(outputloc)){
+  dir.create(outputloc)
+}
+
+tempdir <- paste0(outputloc, "/temp/")
+if(!dir.exists(tempdir)){
+  dir.create(tempdir)
+}
+
+Div_dir <- paste0(outputloc,"/diversity atleast 5 samples/")
+if(!dir.exists(Div_dir)){
+  dir.create(Div_dir)
+}
+
+{
+  dmsanalysis <- dms$meta$analyses[,analysis]
+  meta <- data.frame(table(dmsanalysis))
+  z=meta$Freq<2
+  
+  if (sum(z, na.rm = TRUE)>=1) {#if there are any pops with less than 2 indiv...
+    meta_lesthan2 <-as.character(meta[,1][meta$Freq<2]) #the pops with less than 2 indiv are...
+    myvars <- dmsanalysis%in%meta_lesthan2
+    newdmsanalysis <- dmsanalysis[!myvars]
+    excluded_sample_names <- dms$sample_names[myvars]
+    dms_d <- exclude.samples(dms, excluded_sample_names, remove_fixed_loci=TRUE)
+    cat("metadata contains pops less than 2 individual","\n")
+    print(meta_lesthan2)
+  } else {
+    meta_lesthan2 <-as.character(meta[,1][meta$Freq<2]) #the pops with less than 2 indiv are...
+    myvars <- dmsanalysis%in%meta_lesthan2
+    newdmsanalysis <- dms$meta$analyses[,analysis]
+    dms_d <-dms
+    excluded_sample_names <- NULL
+    cat("metadata is alright without removal of pops","\n")
+  }
+  
+  #making dataframe for  metadata without pops with less than 2 indiv
+  dms_meta <- cbind.data.frame(dms$meta$sample_names, dms$meta$analyses[,analysis],dms$meta$lat, dms$meta$long)
+  colnames(dms_meta) <- c("sample_names","site", "lat", "long")
+  #pp <- dms_meta[!myvars,]
+  #newdms_meta <- pp[apply(table(pp$site)>0,1,any),]
+  newdms_meta <- dms_meta[!myvars,]
+  
+  colnames(newdms_meta) <- c("sample_names","site", "lat", "long")
+  npop <-length(unique(newdms_meta$site))
+  
+  #making dataframe of averages (lat/longs) for metadata
+  
+  newmetalatlongs <- ddply(newdms_meta,
+                           c("site"),
+                           summarise,
+                           lat  = mean(lat),
+                           long  = mean(long),
+                           N=length(site))
+}
+
+npop <- length(unique(newdmsanalysis))
+result <- mat.or.vec(npop, 11)
+measurement_names <- rownames(bs$main_tab[[1]])
+population_names  <-
+  names(bs$main_tab) #ls() rearranges the names
+rownames(result) <- population_names
+colnames(result) <- measurement_names
+
+for (r in 1:npop) {
+  popstats <- bs$main_tab[[r]][, "overall"] ##extract from a list
+  result[r, ] <- popstats
+}
+
+result <- as.data.frame(result)
+result$sample_names <- rownames(result)
+
+###getting latlongs into the diversity results
+metnew2 <- merge(newdms_meta[, 1:2], newmetalatlongs[, 1:4], by = "site")
+
+data2 <- merge(result, metnew2, by = "sample_names", all.x = TRUE) #merge data
+colnames(data2)[which(names(data2) == "dms.meta.analyses...analysis.")] <-
+  "dms.meta.site"
+data2$species <- as.character(species)
+
+gp   <- dart2genepop0(dms, RandRbase, species, dataset, newdmsanalysis, maf_val = 0)
+
+gp_genind <- read.genepop(gp, ncode = 2)
+
+newdms_meta$site <- factor(newdms_meta$site, levels = rev(unique(newdms_meta$site)))
+gp_genind@other <- newdms_meta
+strata(gp_genind) <- gp_genind@other
+setPop(gp_genind) <- ~ site
+
+p_allele <-
+  data.frame(rowSums(private_alleles(gp_genind, locus ~ site,
+                                     count.alleles = F)))
+p_allele$site <- rownames(p_allele)
+rownames(p_allele) <- NULL
+names(p_allele)[names(p_allele) == "rowSums.private_alleles.gp_genind..locus...site..count.alleles...F.."] <-
+  "n_pa"
+data <- merge(data2, p_allele, by.x = "site", by.y = "site")
+
+write.table(data,
+            paste0(Div_dir, "/", species, " diveRsity stats.csv"),
+            sep = ",",
+            row.names = F)
+
+###plot
+
+cexsize <- 0.5
+ptsize <-0.5
+
+tiff(paste0(outputloc,"/temp/",species," diveRsity stats2.tiff"), units="in", width=11.7, height=4, res=300)
+par(mfrow=c(1,3), ## only works if plot out and not export tiff
+    mar=c(1,1,1,1),
+    oma=c(0,0,0.2,0)) #margins between nsw plots
+
+row_sub_long = apply(data.frame(newdms_meta$long), 1, function(row) all(row !=0 ))
+newdmslong <- data.frame(newdms_meta$long)[row_sub_long,]
+row_sub_lat = apply(data.frame(newdms_meta$lat), 1, function(row) all(row !=0 ))
+newdmslat <- data.frame(newdms_meta$lat)[row_sub_lat,]
+
+if (file.exists(paste0(outputloc,"/temp/site_number.csv"))) {
+  rep2 <- read.csv(paste0(outputloc,"/temp/site_number.csv"),sep=" ")
+  
+  testResult <- unlist(lapply(unique(dms$meta$analyses[,analysis]), function(s) {all(s %in% rep2$site)}))
+  if (!all(testResult)) {
+    dms_meta <- cbind.data.frame(dms$meta$sample_names, dms$meta$analyses[,analysis],dms$meta$lat, dms$meta$long)
+    colnames(dms_meta) <- c("sample_names","site", "lat", "long")
+    dms_meta$lat <- as.numeric(dms_meta$lat)
+    dms_meta$long <- as.numeric(dms_meta$long)
+    ###
+    dms_meta2 <- dms_meta[order(dms_meta$site), ]
+    dms_meta2 <- dms_meta2[order(-dms_meta2$lat), ]
+    ####make sure your rep has nums_n_site which is in df2!!!
+    dms_meta2$site <- factor(dms_meta2$site, levels = unique(dms_meta2$site),ordered = TRUE)
+    
+    rep <- ddply(dms_meta2,
+                 .(site),
+                 summarise,
+                 lat  = mean(lat),
+                 long = mean(long))
+    rep2 <- rep[order(-rep$lat), ]
+    x <- length(unique(dms_meta2$site))
+    bgcols = rainbow(x)
+    rep2$nums_n_site <- paste0(1:x, ": ", rep2$site)
+    rep2$num_site <- 1:x
+    write.table(rep2, paste0(outputloc,"/temp/site_number_fromdiv.csv"))
+  }
+  
+} else {
+  dms_meta <- cbind.data.frame(dms$meta$sample_names, dms$meta$analyses[,analysis],dms$meta$lat, dms$meta$long)
+  colnames(dms_meta) <- c("sample_names","site", "lat", "long")
+  dms_meta$lat <- as.numeric(dms_meta$lat)
+  dms_meta$long <- as.numeric(dms_meta$long)
+  ###
+  dms_meta2 <- dms_meta[order(dms_meta$site), ]
+  dms_meta2 <- dms_meta2[order(-dms_meta2$lat), ]
+  ####make sure your rep has nums_n_site which is in df2!!!
+  dms_meta2$site <- factor(dms_meta2$site, levels = unique(dms_meta2$site),ordered = TRUE)
+  rep <- ddply(dms_meta2,
+               .(site),
+               summarise,
+               lat  = mean(lat),
+               long = mean(long))
+  rep2 <- rep[order(-rep$lat), ]
+  x <- length(unique(dms_meta2$site))
+  bgcols = rainbow(x)
+  rep2$nums_n_site <- paste0(1:x, ": ", rep2$site)
+  rep2$num_site <- 1:x
+  write.table(rep2, paste0(outputloc,"/temp/site_number_fromdiv.csv"))
+}
+
+
+data11 <- merge(data,rep2[,c("site","nums_n_site","num_site")],by="site")
+data11$lab <- data11$num_site
+
+divxlims <- c(min(na.omit(rep2$long))-0.4,max(na.omit(rep2$long))+0.4)
+divylims <- c(min(na.omit(rep2$lat))-0.4,max(na.omit(rep2$lat))+0.4)
+
+if ((divxlims[2]-divxlims[1]) <3) {
+  rad <- 0.2
+} else {
+  rad <- 0.5}
+
+## allelic richness
+oz(xlim=divxlims, ylim=divylims, lwd=0.3)#divxlims taken from PCA section
+title(expression(italic("ar")),font=2,cex.main=2)
+points(x=data11$long, y=data11$lat,pch=16,bg="black",cex=ptsize, lwd=0.3)
+draw.bubble(data11$long, data11$lat, (data11$ar)^50, bg=alpha("red",0.2), pch=21, maxradius = rad, lwd=0.3)
+data11 <- data11[complete.cases(data11), ]#remove latlongs that are NAs
+pointLabel(data11$long, data11$lat, labels = paste("  ", data11$lab, "  ", sep=""), cex=0.5,offset=0.25)
+box()
+
+## expected heterozygosity
+oz(xlim=divxlims, ylim=divylims, lwd=0.3)
+points(x=data11$long, y=data11$lat,pch=16,bg="black",cex=ptsize, lwd=0.3)
+draw.bubble(data11$long, data11$lat, (data11$exp_het)^15, bg=alpha("red",0.2), pch=21, maxradius = rad, lwd=0.3)
+title(expression(italic("exp_het")),font=4,cex.main=2)
+pointLabel(data11$long, data11$lat, labels = paste("  ", data11$lab, "  ", sep=""), cex=0.5,offset=0.25)
+box()
+
+## observed heterozygosity
+oz(xlim=divxlims, ylim=divylims, lwd=0.3)
+points(x=data11$long, y=data11$lat,pch=16,bg="black",cex=ptsize, lwd=0.3)
+pointLabel(data11$long, data11$lat, labels = paste("  ", data11$lab, "  ", sep=""), cex=0.5,offset=0.25)
+
+if(min(data11$obs_het)-max(data11$obs_het)==0) {
+  title(expression(italic("obs_het = 0")),font=4,cex.main=0.7)
+} else {
+  draw.bubble(data11$long, data11$lat, (data11$obs_het)^10, bg=alpha("red",0.2),pch=21, maxradius = rad, lwd=0.3)
+  title(expression(italic("obs_het")),cex.main=2)
+}
+box()
+dev.off()
+
+
+#this bit checks for zeros in lats and longs and cut out those samples
+row_sub = apply(data.frame(dms$meta$long), 1, function(row) all(row !=0 ))
+newdmslong <- data.frame(dms$meta$long)[row_sub,]
+row_sub = apply(data.frame(dms$meta$lat), 1, function(row) all(row !=0 ))
+newdmslat <- data.frame(dms$meta$lat)[row_sub,]
+
+#this bit looks for range of latlong values to zoom in on and calulcates range for zoom for ggmap
+divxlims <- c(min(na.omit(newdmslong))-0.6,max(na.omit(newdmslong))+1)
+divylims <- c(min(na.omit(newdmslat))-0.1,max(na.omit(newdmslat))+0.1)
+divxlimsrange <- abs(c(min(na.omit(newdmslong))-max(na.omit(newdmslong))))
+divylimsrange <- abs(c(min(na.omit(newdmslat))-max(na.omit(newdmslat))))
+
+
+coordinate_cities <- read.csv(paste0(maindir,"CityMapCordinates.csv"))
+sf_oz <- ozmap_data("states")
+
+#order and map expected het as a coloured range
+data11 <- data11[order(data11$exp_het),]
+
+ggplot(sf_oz, aes(fill="white")) + geom_sf() +
+  scale_fill_manual(values = "white", guide = "none") +
+  theme_void() + geom_sf() +
+  xlim(divxlims) + ylim(divylims)+
+  geom_point(data = data11, mapping = aes(x = long, y = lat, color = exp_het), size=5, alpha=0.9) +
+  scale_color_gradient(low="yellow", high="red", name="Exp Het") +
+  geom_point(data=coordinate_cities, mapping = aes(x = long, y = lat), size=1)+
+  geom_text(data=coordinate_cities, mapping = aes(x = long, y = lat, label=City),hjust=0,nudge_y=0.03, size=3)
+
+
+ggsave(paste0(Div_dir, species, "_Expected_Het_Heatmap.tiff"), width = 10, height = 12, dpi = 300, units = "in")
+
+
+
+
+#order and map observed het as a coloured range
+data11 <- data11[order(data11$obs_het),]
+
+
+ggplot(sf_oz, aes(fill="white")) + geom_sf() +
+  scale_fill_manual(values = "white", guide = "none") +
+  theme_void() + geom_sf() +
+  xlim(divxlims) + ylim(divylims)+
+  geom_point(data = data11, mapping = aes(x = long, y = lat, color = obs_het), size=5, alpha=0.9) +
+  scale_color_gradient(low="yellow", high="red", name="Obs Het") +
+  geom_point(data=coordinate_cities, mapping = aes(x = long, y = lat), size=1)+
+  geom_text(data=coordinate_cities, mapping = aes(x = long, y = lat, label=City),hjust=0,nudge_y=0.03, size=3)
+
+
+ggsave(paste0(Div_dir, species, "_Observed_Het_Heatmap.tiff"), width = 10, height = 12, dpi = 300, units = "in")
+
+
+
+
+#order and map allelic richness as a coloured range
+data11 <- data11[order(data11$ar),]
+
+
+ggplot(sf_oz, aes(fill="white")) + geom_sf() +
+  scale_fill_manual(values = "white", guide = "none") +
+  theme_void() + geom_sf() +
+  xlim(divxlims) + ylim(divylims)+
+  geom_point(data = data11, mapping = aes(x = long, y = lat, color = ar), size=5, alpha=0.9) +
+  scale_color_gradient(low="yellow", high="red", name="ar") +
+  geom_point(data=coordinate_cities, mapping = aes(x = long, y = lat), size=1)+
+  geom_text(data=coordinate_cities, mapping = aes(x = long, y = lat, label=City),hjust=0,nudge_y=0.03, size=3)
+
+
+ggsave(paste0(Div_dir, species, "_Allelic_Richness_Heatmap.tiff"), width = 10, height = 12, dpi = 300, units = "in")
+
+
+
+
+
+
+
+cat(paste0("all diversity maps are drawn!","\n"))
+################combine div maps with a table
+setwd(outputloc)
+###table
+geodist_data <- get_geodistinfo(newdms_meta)
+
+data11 <- merge(data,rep2[,c("site","nums_n_site","num_site")],by="site")
+data11$lab <- data11$num_site
+
+if ("n_pa" %in% names(data11)){
+}else{
+  data11$n_pa <- data$rowSums.private_alleles.gp_genind..locus...site..count.alleles...F..
+}
+
+data3 <- merge(data11, geodist_data, by="site", all.x=TRUE)
+data2grob <- cbind.data.frame(data3$num_site,data3$site,data3$lat,data3$long, data3$ar, data3$exp_het,data3$obs_het,data3$n_pa, data3$fis, data3$Freq, data3$meanDist)
+colnames(data2grob) <- c("","site","lat","long","allelic_richness (ar)"," expected_het "," observed_het ","n_private_alleles","      fis      "," n_samples ","  meanDist  ")
+data2grob <- data2grob[order(-data2grob$lat),]
+
+ftsz <- 0.2
+tiff(paste0("temp/",species," diveRsity grobtable.tiff"),units="in", width=11.7, height=5, res=300)
+tt <- ttheme_default(base_size =7,
+                     core=list(fg_params=list(fontface=3)),
+                     colhead=list(fg_params=list(col="navyblue", fontface=2L)),
+                     rowhead=list(fg_params=list(col="black", fontface=2L)))
+tg <- tableGrob(data2grob,theme=tt,rows=NULL)
+tg$heights <- rep(unit(0.2,"null"), nrow(tg))
+grid.draw(tg)
+dev.off()
+
+cat(paste0("diversity table drawn!","\n"))
+
+###now combine!
+
+loc_diversity<- dir(path = "temp", pattern = "stats2.tiff$", full.names = TRUE, recursive = TRUE) ###must set working directory to make readPNG work
+loc_diversitytab <- dir(path = "temp", pattern = "grobtable.tiff$", full.names = TRUE, recursive = TRUE) ###must set working directory to make readPNG work
+
+lloo <- c(loc_diversity,loc_diversitytab)
+
+plots <- lapply(ll <- lloo,function(x){
+  img <- as.raster(readTIFF(x)) ##change this to readpng if readPNG doesnt work
+  rasterGrob(img, interpolate = FALSE)
+})
+
+# lay <- rbind(c(1),c(1), c(2),c(2),c(2))
+
+lay <- rbind(c(1),c(2))
+
+ggsave(paste0(Div_dir,species, "_divntab_Atleast5Samps.tiff"),
+       width=11.7, height=8.3,dpi = 300, units = "in", device='tiff',
+       marrangeGrob(grobs = plots, layout_matrix = lay,top=textGrob(paste0(analysis, " Diversity Outputs With Atleast 5 Individuals per Pop"), gp=gpar(fontsize=16,fontface=4))))
+
+file.remove(lloo)
+
+cat(paste0("diversity maps and table combined!","\n"))
+
+setwd(maindir)
+
+
+
+##### DIVERSITY Stats limiting 5 samples per pop #####
+
+m1 <- read.meta.data(d3, RandRbase, species, dataset, fields = as.numeric(ncol(metafile)-4))
+temp<-as.data.frame(m1$analyses)
+
+#set a sample threshold for each pop:
+samplethreshold <-5# chnage this to what number of samples you want toi have uniform across all pops
+
+
+
+#### Below lines remove sites with less than threshold number of samples, and subsample sites that are above the threshold
+for (x in unique(na.omit(temp[, analysis]))) {
+  pop_samples <- which(temp[, analysis] == x)
+  if (length(pop_samples) < samplethreshold) {
+    temp[, analysis]<-gsub(x, replacement=NA, temp[, analysis])
+    print(paste0("Removing ",x, " with ", " with a sample size of ",length(pop_samples)," samples"))
+  }
+  if (length(pop_samples) == samplethreshold) {
+    print(paste0("Keeping ",x, " with ", " with a sample size of ",length(pop_samples)," samples"))
+  }
+  if (length(pop_samples) > samplethreshold) {
+    subsamplepops <- pop_samples[sample(1:length(pop_samples), size=samplethreshold, replace = F)]
+    for (b in 1:length(pop_samples)){
+      if (pop_samples[b] %in% subsamplepops == FALSE){
+        temp[, analysis][pop_samples[b]] <- NA
+      }
+      print(paste0("Reducing ",x, " to a sample size of ", samplethreshold," samples"))
+    }
+  } else {}
+}
+
+
+
+
+# ## If you want to just remove any sites that are below the threshold (but keep individuals that are above a threshold, then unhash the below section)
+# for (x in unique(na.omit(temp[, analysis]))) {
+#   pop_samples <- which(temp[, analysis] == x)
+#   if (length(pop_samples) < samplethreshold) {
+#     temp[, analysis]<-gsub(x, replacement=NA, temp[, analysis])
+#     print(paste0("Removing ",x, " with ", " with a sample size of ",length(pop_samples)," samples"))
+#   } else {}
+# }
+
+m1$analyses<-temp
+dm        <- dart.meta.data.merge(d3, m1)
+fields    <- c(analysis)
+dms     <- data.by.meta.fields(dm, fields, RandRbase, species, dataset, object=analysis); print(dms$meta$analyses[,analysis])
+
+#correct inconsistencies in J's scripts for naming treatment which is for naming files
+treatment <- paste0("raw_SNPFilt_1SNPperClone_Field_", analysis)
+dms$treatment <- treatment
+gta <- dms$gt
+
+gp   <- dart2genepop(dms, RandRbase, species, dataset, dms$meta$analyses[,analysis])
+
+#calculate basic pop gen stats
+bs <- basicStats(infile = gp, outfile = NULL,
+                 fis_ci = FALSE, ar_ci = TRUE,
+                 ar_boots = 999,
+                 rarefaction = FALSE, ar_alpha = 0.05)
+
+#create map plot and table
+
+divrda_dir <- paste0(RandRbase,species,"/popgen/",treatment,"/genepop/bs.rda")
+save(bs, file = divrda_dir)
+
+if(!dir.exists(outputloc)){
+  dir.create(outputloc)
+}
+
+tempdir <- paste0(outputloc, "/temp/")
+if(!dir.exists(tempdir)){
+  dir.create(tempdir)
+}
+
+Div_dir <- paste0(outputloc,"/diversity limiting 5 samples/")
+if(!dir.exists(Div_dir)){
+  dir.create(Div_dir)
+}
+
+{
+  dmsanalysis <- dms$meta$analyses[,analysis]
+  meta <- data.frame(table(dmsanalysis))
+  z=meta$Freq<2
+  
+  if (sum(z, na.rm = TRUE)>=1) {#if there are any pops with less than 2 indiv...
+    meta_lesthan2 <-as.character(meta[,1][meta$Freq<2]) #the pops with less than 2 indiv are...
+    myvars <- dmsanalysis%in%meta_lesthan2
+    newdmsanalysis <- dmsanalysis[!myvars]
+    excluded_sample_names <- dms$sample_names[myvars]
+    dms_d <- exclude.samples(dms, excluded_sample_names, remove_fixed_loci=TRUE)
+    cat("metadata contains pops less than 2 individual","\n")
+    print(meta_lesthan2)
+  } else {
+    meta_lesthan2 <-as.character(meta[,1][meta$Freq<2]) #the pops with less than 2 indiv are...
+    myvars <- dmsanalysis%in%meta_lesthan2
+    newdmsanalysis <- dms$meta$analyses[,analysis]
+    dms_d <-dms
+    excluded_sample_names <- NULL
+    cat("metadata is alright without removal of pops","\n")
+  }
+  
+  #making dataframe for  metadata without pops with less than 2 indiv
+  dms_meta <- cbind.data.frame(dms$meta$sample_names, dms$meta$analyses[,analysis],dms$meta$lat, dms$meta$long)
+  colnames(dms_meta) <- c("sample_names","site", "lat", "long")
+  #pp <- dms_meta[!myvars,]
+  #newdms_meta <- pp[apply(table(pp$site)>0,1,any),]
+  newdms_meta <- dms_meta[!myvars,]
+  
+  colnames(newdms_meta) <- c("sample_names","site", "lat", "long")
+  npop <-length(unique(newdms_meta$site))
+  
+  #making dataframe of averages (lat/longs) for metadata
+  
+  newmetalatlongs <- ddply(newdms_meta,
+                           c("site"),
+                           summarise,
+                           lat  = mean(lat),
+                           long  = mean(long),
+                           N=length(site))
+}
+
+npop <- length(unique(newdmsanalysis))
+result <- mat.or.vec(npop, 11)
+measurement_names <- rownames(bs$main_tab[[1]])
+population_names  <-
+  names(bs$main_tab) #ls() rearranges the names
+rownames(result) <- population_names
+colnames(result) <- measurement_names
+
+for (r in 1:npop) {
+  popstats <- bs$main_tab[[r]][, "overall"] ##extract from a list
+  result[r, ] <- popstats
+}
+
+result <- as.data.frame(result)
+result$sample_names <- rownames(result)
+
+###getting latlongs into the diversity results
+metnew2 <- merge(newdms_meta[, 1:2], newmetalatlongs[, 1:4], by = "site")
+
+data2 <- merge(result, metnew2, by = "sample_names", all.x = TRUE) #merge data
+colnames(data2)[which(names(data2) == "dms.meta.analyses...analysis.")] <-
+  "dms.meta.site"
+data2$species <- as.character(species)
+
+gp   <- dart2genepop0(dms, RandRbase, species, dataset, newdmsanalysis, maf_val = 0)
+
+gp_genind <- read.genepop(gp, ncode = 2)
+
+newdms_meta$site <- factor(newdms_meta$site, levels = rev(unique(newdms_meta$site)))
+gp_genind@other <- newdms_meta
+strata(gp_genind) <- gp_genind@other
+setPop(gp_genind) <- ~ site
+
+p_allele <-
+  data.frame(rowSums(private_alleles(gp_genind, locus ~ site,
+                                     count.alleles = F)))
+p_allele$site <- rownames(p_allele)
+rownames(p_allele) <- NULL
+names(p_allele)[names(p_allele) == "rowSums.private_alleles.gp_genind..locus...site..count.alleles...F.."] <-
+  "n_pa"
+data <- merge(data2, p_allele, by.x = "site", by.y = "site")
+
+write.table(data,
+            paste0(Div_dir, "/", species, " diveRsity stats.csv"),
+            sep = ",",
+            row.names = F)
+
+###plot
+
+cexsize <- 0.5
+ptsize <-0.5
+
+tiff(paste0(outputloc,"/temp/",species," diveRsity stats2.tiff"), units="in", width=11.7, height=4, res=300)
+par(mfrow=c(1,3), ## only works if plot out and not export tiff
+    mar=c(1,1,1,1),
+    oma=c(0,0,0.2,0)) #margins between nsw plots
+
+row_sub_long = apply(data.frame(newdms_meta$long), 1, function(row) all(row !=0 ))
+newdmslong <- data.frame(newdms_meta$long)[row_sub_long,]
+row_sub_lat = apply(data.frame(newdms_meta$lat), 1, function(row) all(row !=0 ))
+newdmslat <- data.frame(newdms_meta$lat)[row_sub_lat,]
+
+if (file.exists(paste0(outputloc,"/temp/site_number.csv"))) {
+  rep2 <- read.csv(paste0(outputloc,"/temp/site_number.csv"),sep=" ")
+  
+  testResult <- unlist(lapply(unique(dms$meta$analyses[,analysis]), function(s) {all(s %in% rep2$site)}))
+  if (!all(testResult)) {
+    dms_meta <- cbind.data.frame(dms$meta$sample_names, dms$meta$analyses[,analysis],dms$meta$lat, dms$meta$long)
+    colnames(dms_meta) <- c("sample_names","site", "lat", "long")
+    dms_meta$lat <- as.numeric(dms_meta$lat)
+    dms_meta$long <- as.numeric(dms_meta$long)
+    ###
+    dms_meta2 <- dms_meta[order(dms_meta$site), ]
+    dms_meta2 <- dms_meta2[order(-dms_meta2$lat), ]
+    ####make sure your rep has nums_n_site which is in df2!!!
+    dms_meta2$site <- factor(dms_meta2$site, levels = unique(dms_meta2$site),ordered = TRUE)
+    
+    rep <- ddply(dms_meta2,
+                 .(site),
+                 summarise,
+                 lat  = mean(lat),
+                 long = mean(long))
+    rep2 <- rep[order(-rep$lat), ]
+    x <- length(unique(dms_meta2$site))
+    bgcols = rainbow(x)
+    rep2$nums_n_site <- paste0(1:x, ": ", rep2$site)
+    rep2$num_site <- 1:x
+    write.table(rep2, paste0(outputloc,"/temp/site_number_fromdiv.csv"))
+  }
+  
+} else {
+  dms_meta <- cbind.data.frame(dms$meta$sample_names, dms$meta$analyses[,analysis],dms$meta$lat, dms$meta$long)
+  colnames(dms_meta) <- c("sample_names","site", "lat", "long")
+  dms_meta$lat <- as.numeric(dms_meta$lat)
+  dms_meta$long <- as.numeric(dms_meta$long)
+  ###
+  dms_meta2 <- dms_meta[order(dms_meta$site), ]
+  dms_meta2 <- dms_meta2[order(-dms_meta2$lat), ]
+  ####make sure your rep has nums_n_site which is in df2!!!
+  dms_meta2$site <- factor(dms_meta2$site, levels = unique(dms_meta2$site),ordered = TRUE)
+  rep <- ddply(dms_meta2,
+               .(site),
+               summarise,
+               lat  = mean(lat),
+               long = mean(long))
+  rep2 <- rep[order(-rep$lat), ]
+  x <- length(unique(dms_meta2$site))
+  bgcols = rainbow(x)
+  rep2$nums_n_site <- paste0(1:x, ": ", rep2$site)
+  rep2$num_site <- 1:x
+  write.table(rep2, paste0(outputloc,"/temp/site_number_fromdiv.csv"))
+}
+
+
+data11 <- merge(data,rep2[,c("site","nums_n_site","num_site")],by="site")
+data11$lab <- data11$num_site
+
+divxlims <- c(min(na.omit(rep2$long))-0.4,max(na.omit(rep2$long))+0.4)
+divylims <- c(min(na.omit(rep2$lat))-0.4,max(na.omit(rep2$lat))+0.4)
+
+if ((divxlims[2]-divxlims[1]) <3) {
+  rad <- 0.2
+} else {
+  rad <- 0.5}
+
+## allelic richness
+oz(xlim=divxlims, ylim=divylims, lwd=0.3)#divxlims taken from PCA section
+title(expression(italic("ar")),font=2,cex.main=2)
+points(x=data11$long, y=data11$lat,pch=16,bg="black",cex=ptsize, lwd=0.3)
+draw.bubble(data11$long, data11$lat, (data11$ar)^50, bg=alpha("red",0.2), pch=21, maxradius = rad, lwd=0.3)
+data11 <- data11[complete.cases(data11), ]#remove latlongs that are NAs
+pointLabel(data11$long, data11$lat, labels = paste("  ", data11$lab, "  ", sep=""), cex=0.5,offset=0.25)
+box()
+
+## expected heterozygosity
+oz(xlim=divxlims, ylim=divylims, lwd=0.3)
+points(x=data11$long, y=data11$lat,pch=16,bg="black",cex=ptsize, lwd=0.3)
+draw.bubble(data11$long, data11$lat, (data11$exp_het)^15, bg=alpha("red",0.2), pch=21, maxradius = rad, lwd=0.3)
+title(expression(italic("exp_het")),font=4,cex.main=2)
+pointLabel(data11$long, data11$lat, labels = paste("  ", data11$lab, "  ", sep=""), cex=0.5,offset=0.25)
+box()
+
+## observed heterozygosity
+oz(xlim=divxlims, ylim=divylims, lwd=0.3)
+points(x=data11$long, y=data11$lat,pch=16,bg="black",cex=ptsize, lwd=0.3)
+pointLabel(data11$long, data11$lat, labels = paste("  ", data11$lab, "  ", sep=""), cex=0.5,offset=0.25)
+
+if(min(data11$obs_het)-max(data11$obs_het)==0) {
+  title(expression(italic("obs_het = 0")),font=4,cex.main=0.7)
+} else {
+  draw.bubble(data11$long, data11$lat, (data11$obs_het)^10, bg=alpha("red",0.2),pch=21, maxradius = rad, lwd=0.3)
+  title(expression(italic("obs_het")),cex.main=2)
+}
+box()
+dev.off()
+
+
+#this bit checks for zeros in lats and longs and cut out those samples
+row_sub = apply(data.frame(dms$meta$long), 1, function(row) all(row !=0 ))
+newdmslong <- data.frame(dms$meta$long)[row_sub,]
+row_sub = apply(data.frame(dms$meta$lat), 1, function(row) all(row !=0 ))
+newdmslat <- data.frame(dms$meta$lat)[row_sub,]
+
+#this bit looks for range of latlong values to zoom in on and calulcates range for zoom for ggmap
+divxlims <- c(min(na.omit(newdmslong))-0.6,max(na.omit(newdmslong))+1)
+divylims <- c(min(na.omit(newdmslat))-0.1,max(na.omit(newdmslat))+0.1)
+divxlimsrange <- abs(c(min(na.omit(newdmslong))-max(na.omit(newdmslong))))
+divylimsrange <- abs(c(min(na.omit(newdmslat))-max(na.omit(newdmslat))))
+
+
+coordinate_cities <- read.csv(paste0(maindir,"CityMapCordinates.csv"))
+sf_oz <- ozmap_data("states")
+
+#order and map expected het as a coloured range
+data11 <- data11[order(data11$exp_het),]
+
+ggplot(sf_oz, aes(fill="white")) + geom_sf() +
+  scale_fill_manual(values = "white", guide = "none") +
+  theme_void() + geom_sf() +
+  xlim(divxlims) + ylim(divylims)+
+  geom_point(data = data11, mapping = aes(x = long, y = lat, color = exp_het), size=5, alpha=0.9) +
+  scale_color_gradient(low="yellow", high="red", name="Exp Het") +
+  geom_point(data=coordinate_cities, mapping = aes(x = long, y = lat), size=1)+
+  geom_text(data=coordinate_cities, mapping = aes(x = long, y = lat, label=City),hjust=0,nudge_y=0.03, size=3)
+
+
+ggsave(paste0(Div_dir, species, "_Expected_Het_Heatmap.tiff"), width = 10, height = 12, dpi = 300, units = "in")
+
+
+
+
+#order and map observed het as a coloured range
+data11 <- data11[order(data11$obs_het),]
+
+
+ggplot(sf_oz, aes(fill="white")) + geom_sf() +
+  scale_fill_manual(values = "white", guide = "none") +
+  theme_void() + geom_sf() +
+  xlim(divxlims) + ylim(divylims)+
+  geom_point(data = data11, mapping = aes(x = long, y = lat, color = obs_het), size=5, alpha=0.9) +
+  scale_color_gradient(low="yellow", high="red", name="Obs Het") +
+  geom_point(data=coordinate_cities, mapping = aes(x = long, y = lat), size=1)+
+  geom_text(data=coordinate_cities, mapping = aes(x = long, y = lat, label=City),hjust=0,nudge_y=0.03, size=3)
+
+
+ggsave(paste0(Div_dir, species, "_Observed_Het_Heatmap.tiff"), width = 10, height = 12, dpi = 300, units = "in")
+
+
+
+
+#order and map allelic richness as a coloured range
+data11 <- data11[order(data11$ar),]
+
+
+ggplot(sf_oz, aes(fill="white")) + geom_sf() +
+  scale_fill_manual(values = "white", guide = "none") +
+  theme_void() + geom_sf() +
+  xlim(divxlims) + ylim(divylims)+
+  geom_point(data = data11, mapping = aes(x = long, y = lat, color = ar), size=5, alpha=0.9) +
+  scale_color_gradient(low="yellow", high="red", name="ar") +
+  geom_point(data=coordinate_cities, mapping = aes(x = long, y = lat), size=1)+
+  geom_text(data=coordinate_cities, mapping = aes(x = long, y = lat, label=City),hjust=0,nudge_y=0.03, size=3)
+
+
+ggsave(paste0(Div_dir, species, "_Allelic_Richness_Heatmap.tiff"), width = 10, height = 12, dpi = 300, units = "in")
+
+
+
+
+
+
+
+cat(paste0("all diversity maps are drawn!","\n"))
+################combine div maps with a table
+setwd(outputloc)
+###table
+geodist_data <- get_geodistinfo(newdms_meta)
+
+data11 <- merge(data,rep2[,c("site","nums_n_site","num_site")],by="site")
+data11$lab <- data11$num_site
+
+if ("n_pa" %in% names(data11)){
+}else{
+  data11$n_pa <- data$rowSums.private_alleles.gp_genind..locus...site..count.alleles...F..
+}
+
+data3 <- merge(data11, geodist_data, by="site", all.x=TRUE)
+data2grob <- cbind.data.frame(data3$num_site,data3$site,data3$lat,data3$long, data3$ar, data3$exp_het,data3$obs_het,data3$n_pa, data3$fis, data3$Freq, data3$meanDist)
+colnames(data2grob) <- c("","site","lat","long","allelic_richness (ar)"," expected_het "," observed_het ","n_private_alleles","      fis      "," n_samples ","  meanDist  ")
+data2grob <- data2grob[order(-data2grob$lat),]
+
+ftsz <- 0.2
+tiff(paste0("temp/",species," diveRsity grobtable.tiff"),units="in", width=11.7, height=5, res=300)
+tt <- ttheme_default(base_size =7,
+                     core=list(fg_params=list(fontface=3)),
+                     colhead=list(fg_params=list(col="navyblue", fontface=2L)),
+                     rowhead=list(fg_params=list(col="black", fontface=2L)))
+tg <- tableGrob(data2grob,theme=tt,rows=NULL)
+tg$heights <- rep(unit(0.2,"null"), nrow(tg))
+grid.draw(tg)
+dev.off()
+
+cat(paste0("diversity table drawn!","\n"))
+
+###now combine!
+
+loc_diversity<- dir(path = "temp", pattern = "stats2.tiff$", full.names = TRUE, recursive = TRUE) ###must set working directory to make readPNG work
+loc_diversitytab <- dir(path = "temp", pattern = "grobtable.tiff$", full.names = TRUE, recursive = TRUE) ###must set working directory to make readPNG work
+
+lloo <- c(loc_diversity,loc_diversitytab)
+
+plots <- lapply(ll <- lloo,function(x){
+  img <- as.raster(readTIFF(x)) ##change this to readpng if readPNG doesnt work
+  rasterGrob(img, interpolate = FALSE)
+})
+
+# lay <- rbind(c(1),c(1), c(2),c(2),c(2))
+
+lay <- rbind(c(1),c(2))
+
+ggsave(paste0(Div_dir,species, "_divntab_limting5Samps.tiff"),
+       width=11.7, height=8.3,dpi = 300, units = "in", device='tiff',
+       marrangeGrob(grobs = plots, layout_matrix = lay,top=textGrob(paste0(analysis, " Diversity Outputs With Atleast 5 Individuals per Pop"), gp=gpar(fontsize=16,fontface=4))))
+
+file.remove(lloo)
+
+cat(paste0("diversity maps and table combined!","\n"))
+
+setwd(maindir)
+
+
+
+##### Create summary PDF of analyses for species ##### 
+maindir<- "C:/Users/dimonr/OneDrive - DPIE/R/rrspecies/"
+setwd(maindir)
+
+summarise_QC(species, RandRbase, dataset)
+# combine_plots(species)
+
+####combine figures to get species summary
+
+loc_QC <-dir(path = outputloc, pattern = " QCdataALL.tiff$", full.names = TRUE, recursive = TRUE) ###must set working directory to make readtiff work
+loc_diversityAtleast5Samps <- dir(path = outputloc, pattern = "_divntab_Atleast5Samps.tiff$", full.names = TRUE, recursive = TRUE) 
+loc_diversityLimiting5Samps <- dir(path = outputloc, pattern = "_divntab_limting5Samps.tiff$", full.names = TRUE, recursive = TRUE) 
+loc_PCA_Lat <- dir(path = paste0(outputloc,"/PCA/"), pattern = "_PC1_PC2_PC3.tiff$", full.names = TRUE, recursive = TRUE) 
+loc_PCA_wMap <- dir(path = paste0(outputloc,"/PCA/"), pattern = "_PCA_pops.tiff$", full.names = TRUE, recursive = TRUE)
+loc_PCA_1_2 <- dir(path = paste0(outputloc,"/PCA/"), pattern = "_PC1-PC2.tiff$", full.names = TRUE, recursive = TRUE)
+loc_PCA_Combined <- dir(path = paste0(outputloc,"/PCA/"), pattern = "_Combined PCA.tiff$", full.names = TRUE, recursive = TRUE) 
+loc_PCA_Centroidmap <- dir(path = paste0(outputloc,"/PCA/"), pattern = "Dist_from_PCA12_Centroid.tiff$", full.names = TRUE, recursive = TRUE)
+loc_PCA_Centroid <- dir(path = paste0(outputloc,"/PCA/"), pattern = "_median_PC123.tiff$", full.names = TRUE, recursive = TRUE)
+loc_DistributionMap <- dir(path = paste0(outputloc,"/Map/"), pattern = "_Distribution_Map.tiff$", full.names = TRUE, recursive = TRUE)
+loc_NJTree <- dir(path = paste0(outputloc,"/NJTree/"), pattern = "_NJ_Tree_PCA.tiff$", full.names = TRUE, recursive = TRUE)
+loc_Kinship <- dir(path = paste0(outputloc, "/Kinship/"), pattern = "_kinship_heatmap.tiff$", full.names = TRUE, recursive = TRUE)
+loc_LEAbar <-dir(path = outputloc, pattern = "\\lea k2345loc bar test.tiff$", full.names = TRUE, recursive = TRUE) 
+loc_Fst_atleast1Samps <- dir(path = outputloc, pattern = "_fstplot_atleast1Samps.tiff$", full.names = TRUE, recursive = TRUE)
+loc_Fst_limting5Samps <- dir(path = outputloc, pattern = "_fstplot_limiting5Samps.tiff$", full.names = TRUE, recursive = TRUE)
+loc_heatmapsFst_atleast1Samps <- dir(path = outputloc, pattern = "_fstheatmaps_atleast1Samps.tiff$", full.names = TRUE, recursive = TRUE)
+loc_heatmapsFst_limting5Samps <- dir(path = outputloc, pattern = "_fstheatmaps_limiting5Samps.tiff$", full.names = TRUE, recursive = TRUE)
+
+
+
+
+locs <- c(loc_QC,
+          loc_DistributionMap,
+          loc_PCA_wMap,
+          loc_PCA_Lat,
+          loc_PCA_1_2,
+          loc_PCA_Combined, 
+          loc_PCA_Centroid,
+          loc_PCA_Centroidmap,
+          loc_LEAbar, 
+          loc_diversityAtleast1Samps,
+          loc_diversityLimiting5Samps, 
+          loc_Fst_atleast1Samps,
+          loc_Fst_limting5Samps,
+          loc_heatmapsFst_atleast5Samps,
+          loc_heatmapsFst_limting5Samps,
+          loc_Fstq,
+          loc_heatmapsFstq, 
+          loc_NJTree, 
+          loc_Kinship)
+
+
+for (i in 1:length(locs)) {
+  if (!file.exists(locs[i])){
+    cat(paste0(locs[i]," doesn't exist","\n"))
+  }
+}
+
+plots <- lapply(ll <- locs,function(x){
+  img <- as.raster(readTIFF(x))
+  rasterGrob(img, interpolate = FALSE)
+})
+ggsave(paste0(outputloc2,species, "_", analysis, "_outputs.pdf"),width=7, height=5,
+       marrangeGrob(grobs = plots, nrow=1, ncol=1,top=NULL))#width=7, height=3
+print(locs)
+cat(paste0("dart summary generated in ", outputloc,"/",species, "_", analysis, "_outputs.pdf!"))
+

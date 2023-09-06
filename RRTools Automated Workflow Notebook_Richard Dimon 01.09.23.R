@@ -166,7 +166,7 @@ for (q in 1:length(rep_all$analysis)){
 
 #googlemaps base and plot
 library(ggmap)
-register_google(key = "AIzaSyBZIYV071yUULZTtcUMUZTMwOgRJrKAcaw")
+register_google(key = "<INSERT YOUR UNIQUE GOOGLE API KEY HERE>")
 
 #gmapzoom = 5
 
